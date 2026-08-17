@@ -25,11 +25,16 @@ type Spec = {
   workload: string
   config: string
   mode: "debug" | "run"
-  env: string
+  key: string
   remote: string
   program: string
   health: string
-  browser?: string
+}
+type Browser = {
+  id: string
+  config: string
+  key: string
+  path: string
 }
 
 const root = path.resolve(import.meta.dir, "../../..")
@@ -57,7 +62,7 @@ const specs: Spec[] = [
     workload: "opencode-api",
     config: "Veritly Backend",
     mode: "debug",
-    env: "DEV_BACKEND_PORT",
+    key: "DEV_BACKEND_PORT",
     remote: "http",
     program: "packages/opencode/src/server/main.ts",
     health: "/readyz",
@@ -67,12 +72,22 @@ const specs: Spec[] = [
     workload: "opencode-frontend",
     config: "Veritly Frontend",
     mode: "run",
-    env: "DEV_FRONTEND_PORT",
+    key: "DEV_FRONTEND_PORT",
     remote: "http",
     program: "packages/app/script/dev.ts",
     health: "/",
-    browser: "Veritly Frontend Browser",
   },
+]
+const browsers: Browser[] = [
+  { id: "frontend", config: "Veritly Frontend Browser", key: "PUBLIC_BASE_URL", path: "/" },
+  {
+    id: "activepieces",
+    config: "Veritly Activepieces Browser",
+    key: "VITE_ACTIVEPIECES_WEB_URL",
+    path: "/veritly/editor",
+  },
+  { id: "data", config: "Veritly Data Browser", key: "VITE_DATA_WEB_URL", path: "/veritly/workspace" },
+  { id: "metabase", config: "Veritly Metabase Browser", key: "VITE_METABASE_WEB_URL", path: "/" },
 ]
 
 const args = process.argv.slice(2)
@@ -88,8 +103,18 @@ function option(name: string) {
   return value
 }
 
+function flag(name: string) {
+  const pos = args.indexOf(name)
+  if (pos === -1) return false
+  args.splice(pos, 1)
+  return true
+}
+
 const chosen = option("--ide")
 const override = option("--port")
+const session = option("--session")
+const frame = option("--frame")
+const details = flag("--inspect")
 
 function object(value: unknown): value is Json {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -102,6 +127,13 @@ function print(value: unknown) {
 function message(value: unknown) {
   if (value instanceof Error) return value.message
   return String(value)
+}
+
+function index() {
+  if (!frame) return 0
+  const value = Number(frame)
+  if (!Number.isInteger(value) || value < 0) throw new Error("--frame must be a non-negative integer")
+  return value
 }
 
 function parse(value: string) {
@@ -281,11 +313,9 @@ async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 5_0
   const schema = ide.tools.find((item) => item.name === name)
   if (!schema) throw new Error(`${ide.name} does not expose ${name}`)
   const args = { ...input }
-  if (
-    object(schema.inputSchema) &&
-    object(schema.inputSchema.properties) &&
-    schema.inputSchema.properties.project_path
-  ) {
+  const props = object(schema.inputSchema) && object(schema.inputSchema.properties) ? schema.inputSchema.properties : {}
+  if (session && props.session_id && !args.session_id) args.session_id = session
+  if (props.project_path) {
     if (!args.project_path) args.project_path = root
   }
   return content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
@@ -327,15 +357,23 @@ function spec(name?: string) {
   return found
 }
 
-function port(item: Spec) {
-  const value = Number(vars()[item.env])
-  if (!Number.isInteger(value) || value < 1 || value > 65_535)
-    throw new Error(`${item.env} in ${file} must be 1..65535`)
-  return value
+function browser(name?: string) {
+  const found = browsers.find((item) => item.id === name || item.config === name)
+  if (!found) throw new Error(`unknown frontend ${name || ""}; expected ${browsers.map((item) => item.id).join("|")}|all`)
+  return found
 }
 
-function runtime(item: Spec) {
-  return path.join(root, ".veritly/ide", `${item.id}.env`)
+function address(item: Browser) {
+  const base = vars()[item.key]
+  if (!base) throw new Error(`${item.key} is required in ${file}`)
+  return new URL(item.path, base).toString()
+}
+
+function port(item: Spec) {
+  const value = Number(vars()[item.key])
+  if (!Number.isInteger(value) || value < 1 || value > 65_535)
+    throw new Error(`${item.key} in ${file} must be 1..65535`)
+  return value
 }
 
 async function tunnel() {
@@ -413,13 +451,7 @@ function route(row: Json) {
 async function intercept(item: Spec) {
   const rows = await workloads()
   const active = rows.find((row) => row.name === item.workload && intercepted(row))
-  if (active && fs.existsSync(runtime(item))) {
-    fs.chmodSync(runtime(item), 0o600)
-    return { created: false, value: route(active) }
-  }
-  if (active) await detach(item)
-  fs.mkdirSync(path.dirname(runtime(item)), { recursive: true })
-  fs.writeFileSync(runtime(item), "", { mode: 0o600 })
+  if (active) return { created: false, value: route(active) }
   await command(
     [
       "telepresence",
@@ -431,18 +463,14 @@ async function intercept(item: Spec) {
       `${port(item)}:${item.remote}`,
       "--mount",
       "false",
-      "--env-file",
-      runtime(item),
       "--format",
       "json",
       "--progress",
       "quiet",
     ],
     root,
-    10_000,
+    20_000,
   )
-  if (!fs.existsSync(runtime(item))) throw new Error(`Telepresence did not write ${runtime(item)}`)
-  fs.chmodSync(runtime(item), 0o600)
   const found = (await workloads()).find((row) => row.name === item.workload && intercepted(row))
   if (!found) throw new Error(`Telepresence did not create an intercept for ${item.workload}`)
   return { created: true, value: route(found) }
@@ -526,12 +554,13 @@ async function sessions(ide: Endpoint) {
 }
 
 function run(item: Spec) {
-  fs.mkdirSync(path.dirname(runtime(item)), { recursive: true })
-  const log = path.join(path.dirname(runtime(item)), `${item.id}.log`)
+  const dir = path.join(root, ".veritly/ide")
+  fs.mkdirSync(dir, { recursive: true })
+  const log = path.join(dir, `${item.id}.log`)
   const fd = fs.openSync(log, "a", 0o600)
   const proc = Bun.spawn(["setsid", "bun", "--no-install", item.program], {
     cwd: root,
-    env: { ...process.env, ...vars(runtime(item)), ...vars(), NODE_ENV: "development" },
+    env: { ...process.env, ...vars(), NODE_ENV: "development" },
     stdin: "ignore",
     stdout: fd,
     stderr: fd,
@@ -555,6 +584,7 @@ async function start(item: Spec) {
       service: item.id,
       mode: item.mode,
       ide: ide.id,
+      env: file,
       port: port(item),
       processes: running,
       health: check,
@@ -573,6 +603,7 @@ async function start(item: Spec) {
       workload: item.workload,
       mode: item.mode,
       ide: ide.id,
+      env: file,
       port: port(item),
       health,
       launch,
@@ -617,6 +648,7 @@ async function state(item: Spec) {
     service: item.id,
     workload: item.workload,
     mode: item.mode,
+    env: file,
     port: port(item),
     running: pids(item),
     intercepted: Boolean(route),
@@ -708,7 +740,10 @@ async function doctor() {
       policies?.["/workspace"] === "Ignore" &&
       policies?.["/workspace/node_modules"] === "Ignore",
     ide: Boolean(selected),
-    configs: specs.every((item) => loaded.includes(item.config)) && loaded.includes("Veritly IDE Breakpoint Test"),
+    configs:
+      specs.every((item) => loaded.includes(item.config)) &&
+      browsers.every((item) => loaded.includes(item.config)) &&
+      loaded.includes("Veritly IDE Breakpoint Test"),
     services: specs.every((item) => names.includes(item.workload)),
   }
   return {
@@ -731,6 +766,7 @@ async function doctor() {
       configuration: item.config,
       available: names.includes(item.workload),
     })),
+    frontends: browsers.map((item) => ({ id: item.id, url: address(item), configuration: item.config })),
   }
 }
 
@@ -751,7 +787,14 @@ async function smoke() {
       const value = await tool(ide, "evaluate_expression", { expression: "value" })
       const ok = JSON.stringify(value).includes("42")
       if (!ok) throw new Error(`breakpoint evaluation did not return 42: ${JSON.stringify(value)}`)
-      return { ok: true, ide: ide.id, port: ide.port, breakpoint, run, paused, expression: value }
+      const inspection = await snapshot(ide, 0, ["input", "value"])
+      if (!JSON.stringify(inspection.variables).includes("42"))
+        throw new Error(`breakpoint variables did not include 42: ${JSON.stringify(inspection.variables)}`)
+      const mutation = await tool(ide, "evaluate_expression", { expression: "value = 43" })
+      const changed = await tool(ide, "evaluate_expression", { expression: "value" })
+      if (!JSON.stringify(changed).includes("43"))
+        throw new Error(`breakpoint mutation did not return 43: ${JSON.stringify(changed)}`)
+      return { ok: true, ide: ide.id, port: ide.port, breakpoint, run, paused, expression: value, inspection, mutation, changed }
     } finally {
       await attempt(() => tool(ide, "stop_debug_session"))
     }
@@ -760,17 +803,44 @@ async function smoke() {
   }
 }
 
+async function values(ide: Endpoint, names: string[], frame = 0) {
+  if (!names.length) return tool(ide, "get_variables", { frame_index: frame })
+  const results: unknown[] = []
+  for (const expression of names)
+    results.push(await tool(ide, "evaluate_expression", { expression, frame_index: frame }))
+  const first = results.find(object)
+  return {
+    sessionId: first?.sessionId,
+    frameIndex: frame,
+    variables: results.map((value) => (object(value) && object(value.result) ? value.result : value)),
+  }
+}
+
+async function snapshot(ide: Endpoint, frame = 0, names: string[] = []) {
+  const status = await tool(ide, "get_debug_session_status", { include_source_context: true, include_variables: true })
+  if (!object(status) || status.state !== "paused")
+    throw new Error("variable inspection requires a paused session; use debug wait --inspect or debug pause")
+  const stack = await tool(ide, "get_stack_trace")
+  const variables = await values(ide, names, frame)
+  const source = await tool(ide, "get_source_context")
+  const threads = await tool(ide, "list_threads")
+  return { status, stack, variables, source, threads }
+}
+
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
 veritly-ide ides
 veritly-ide open [PATH] [LINE] [--ide ID]
 veritly-ide services
 veritly-ide start|stop|status backend|frontend [--ide ID]
-veritly-ide attach frontend [--ide ID]
+veritly-ide attach frontend|activepieces|data|metabase|all [--ide ID]
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
-veritly-ide debug configs|sessions|status|wait|resume|pause|step-over|step-into|step-out|eval|start|run|stop [...]
+veritly-ide debug configs|sessions|status|wait|inspect|vars|stack|source|threads|frame [...]
+veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
+veritly-ide debug commands | TOOL [JSON|-]
 veritly-ide mcp tools | call TOOL [JSON|-]
 veritly-ide test breakpoint
 
+Use --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
 All result data is JSON on stdout. Errors are JSON on stderr.`
 
 async function main() {
@@ -799,7 +869,16 @@ async function main() {
     return 0
   }
   if (group === "services") {
-    print(specs.map((item) => ({ ...item, port: port(item) })))
+    print(
+      specs.map((item) => ({
+        id: item.id,
+        workload: item.workload,
+        mode: item.mode,
+        port: port(item),
+        env: file,
+        configuration: item.config,
+      })),
+    )
     return 0
   }
   if (["start", "stop", "status"].includes(group)) {
@@ -813,11 +892,19 @@ async function main() {
     return 0
   }
   if (group === "attach") {
-    const item = spec(args.shift())
-    if (!item.browser) throw new Error(`${item.id} starts in ${item.mode} mode and has no separate browser debugger`)
+    const name = args.shift()
+    const targets = name === "all" ? browsers : [browser(name)]
     const ide = await endpoint()
-    await config(ide, item.browser)
-    print(await tool(ide, "start_debug_session", { configuration_name: item.browser }, 10_000))
+    await Promise.all(targets.map((item) => config(ide, item.config)))
+    const sessions = []
+    for (const item of targets) {
+      sessions.push({
+        frontend: item.id,
+        url: address(item),
+        session: await tool(ide, "start_debug_session", { configuration_name: item.config }, 10_000),
+      })
+    }
+    print({ sessions })
     return 0
   }
   if (group === "mcp") {
@@ -850,6 +937,17 @@ async function main() {
   if (group === "debug") {
     const ide = await endpoint()
     const action = args.shift()
+    if (action === "commands") {
+      print(
+        ide.tools.map((item) => ({
+          command: typeof item.name === "string" ? item.name.replaceAll("_", "-") : item.name,
+          tool: item.name,
+          description: item.description,
+          inputSchema: item.inputSchema,
+        })),
+      )
+      return 0
+    }
     const map: Record<string, string> = {
       configs: "list_run_configurations",
       sessions: "list_debug_sessions",
@@ -862,12 +960,38 @@ async function main() {
       stop: "stop_debug_session",
     }
     if (action && map[action]) print(await tool(ide, map[action], await input(args), 30_000))
-    else if (action === "wait")
-      print(await tool(ide, "wait_for_pause", { timeout: Number(args.shift() || "5") }, 30_000))
-    else if (action === "eval") {
+    else if (action === "wait") {
+      const timeout = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : 5
+      if (timeout < 1) throw new Error("debug wait timeout must be positive")
+      const pause = await tool(ide, "wait_for_pause", { timeout }, 30_000)
+      if (!details && args.length) throw new Error("debug wait variable names require --inspect")
+      print(details ? { pause, ...(await snapshot(ide, index(), args)) } : pause)
+    } else if (action === "inspect") {
+      const selected = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : index()
+      print(await snapshot(ide, selected, args))
+    } else if (action === "vars") {
+      const raw = args.join(" ").trim()
+      print(
+        raw.startsWith("{") || raw === "-"
+          ? await tool(ide, "get_variables", await input(args))
+          : await values(ide, args, index()),
+      )
+    } else if (action === "stack") print(await tool(ide, "get_stack_trace", await input(args)))
+    else if (action === "source") print(await tool(ide, "get_source_context", await input(args)))
+    else if (action === "threads") print(await tool(ide, "list_threads", await input(args)))
+    else if (action === "frame") {
+      const frame = Number(args.shift())
+      if (!Number.isInteger(frame) || frame < 0) throw new Error("debug frame requires a non-negative index")
+      print(await tool(ide, "select_stack_frame", { frame_index: frame }))
+    } else if (action === "eval") {
       const expression = args.join(" ").trim()
       if (!expression) throw new Error("debug eval requires an expression")
-      print(await tool(ide, "evaluate_expression", { expression }))
+      print(await tool(ide, "evaluate_expression", { expression, frame_index: index() }))
+    } else if (action === "set") {
+      const target = args.shift()
+      const value = args.join(" ").trim()
+      if (!target || !value) throw new Error("debug set requires TARGET EXPRESSION")
+      print(await tool(ide, "evaluate_expression", { expression: `${target} = (${value})`, frame_index: index() }))
     } else if (action === "start") {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug start requires a configuration name")
@@ -876,7 +1000,11 @@ async function main() {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug run requires a configuration name")
       print(await tool(ide, "execute_run_configuration", { name, mode: "run" }, 10_000))
-    } else throw new Error("unknown debug command")
+    } else {
+      const name = action?.replaceAll("-", "_")
+      if (!name || !ide.tools.some((item) => item.name === name)) throw new Error("unknown debug command")
+      print(await tool(ide, name, await input(args), 30_000))
+    }
     return 0
   }
   if (group === "test" && args.shift() === "breakpoint") {

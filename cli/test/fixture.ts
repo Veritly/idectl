@@ -1,5 +1,5 @@
 export function sample(input: number) {
-  const value = input * 2
+  let value = input * 2
   const proof = value + 1 // veritly-ide-breakpoint
   return proof
 }
