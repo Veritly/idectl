@@ -39,6 +39,7 @@ type Browser = {
 
 const root = path.resolve(import.meta.dir, "../../..")
 const file = path.join(root, ".env.local-cluster")
+const officeRoot = path.resolve(process.env.VERITLY_OFFICE_ROOT || path.join(root, "../Veritly-Office"))
 const namespace = "veritly"
 const context = "k3d-veritly-dev"
 const ides: Ide[] = [
@@ -160,6 +161,34 @@ async function command(argv: string[], cwd = root, timeout?: number) {
   if (state.timed) throw new Error(`${argv.join(" ")} timed out after ${timeout}ms`)
   if (code !== 0) throw new Error(stderr.trim() || stdout.trim() || `${argv.join(" ")} failed with ${code}`)
   return stdout.trim()
+}
+
+async function office(values: string[]) {
+  const entrypoint = path.join(officeRoot, "script/veritly-office")
+  if (!fs.existsSync(entrypoint))
+    throw new Error(`Veritly Office CLI was not found at ${entrypoint}; set VERITLY_OFFICE_ROOT`)
+  const forwarded = [
+    ...(chosen ? ["--ide", chosen] : []),
+    ...(override ? ["--port", override] : []),
+    ...(session ? ["--session", session] : []),
+    ...(frame ? ["--frame", frame] : []),
+    ...values,
+  ]
+  const proc = Bun.spawn([entrypoint, ...forwarded], {
+    cwd: officeRoot,
+    env: process.env,
+    stdin: "inherit",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  if (stdout) process.stdout.write(stdout)
+  if (stderr) process.stderr.write(stderr)
+  return code
 }
 
 async function attempt<T>(run: () => Promise<T>) {
@@ -828,6 +857,7 @@ async function snapshot(ide: Endpoint, frame = 0, names: string[] = []) {
 }
 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
+veritly-ide office COMMAND... [--ide rustrover|vscode]
 veritly-ide ides
 veritly-ide open [PATH] [LINE] [--ide ID]
 veritly-ide services
@@ -849,6 +879,7 @@ async function main() {
     process.stdout.write(`${usage}\n`)
     return 0
   }
+  if (group === "office") return office(args)
   if (group === "doctor") {
     const value = await doctor()
     print(value)
