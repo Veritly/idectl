@@ -1,0 +1,4 @@
+interface:
+  display_name: "Veritly IDE Debug"
+  short_description: "Debug local Veritly services through JetBrains"
+  default_prompt: "Use $veritly-ide to start a Veritly service locally and debug it through the active JetBrains IDE."

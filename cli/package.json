@@ -1,0 +1,19 @@
+{
+  "name": "@veritly/ide",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "veritly-ide": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit -p .",
+    "test": "bun test ./test/cli.test.ts",
+    "test:breakpoint": "bun src/cli.ts test breakpoint"
+  },
+  "devDependencies": {
+    "@types/bun": "catalog:",
+    "@typescript/native-preview": "catalog:",
+    "typescript": "catalog:"
+  }
+}
