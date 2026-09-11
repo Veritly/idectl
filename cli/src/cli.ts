@@ -39,7 +39,7 @@ type Browser = {
 
 const root = path.resolve(import.meta.dir, "../../..")
 const file = path.join(root, ".env.local-cluster")
-const officeRoot = path.resolve(process.env.VERITLY_OFFICE_ROOT || path.join(root, "../Veritly-Office"))
+const officeRoot = path.join(root, "vendor/veritly-office")
 const namespace = "veritly"
 const context = "k3d-veritly-dev"
 const ides: Ide[] = [
@@ -165,8 +165,7 @@ async function command(argv: string[], cwd = root, timeout?: number) {
 
 async function office(values: string[]) {
   const entrypoint = path.join(officeRoot, "script/veritly-office")
-  if (!fs.existsSync(entrypoint))
-    throw new Error(`Veritly Office CLI was not found at ${entrypoint}; set VERITLY_OFFICE_ROOT`)
+  if (!fs.existsSync(entrypoint)) throw new Error(`Veritly Office submodule is not initialized at ${officeRoot}`)
   const forwarded = [
     ...(chosen ? ["--ide", chosen] : []),
     ...(override ? ["--port", override] : []),
@@ -388,7 +387,8 @@ function spec(name?: string) {
 
 function browser(name?: string) {
   const found = browsers.find((item) => item.id === name || item.config === name)
-  if (!found) throw new Error(`unknown frontend ${name || ""}; expected ${browsers.map((item) => item.id).join("|")}|all`)
+  if (!found)
+    throw new Error(`unknown frontend ${name || ""}; expected ${browsers.map((item) => item.id).join("|")}|all`)
   return found
 }
 
@@ -823,7 +823,18 @@ async function smoke() {
       const changed = await tool(ide, "evaluate_expression", { expression: "value" })
       if (!JSON.stringify(changed).includes("43"))
         throw new Error(`breakpoint mutation did not return 43: ${JSON.stringify(changed)}`)
-      return { ok: true, ide: ide.id, port: ide.port, breakpoint, run, paused, expression: value, inspection, mutation, changed }
+      return {
+        ok: true,
+        ide: ide.id,
+        port: ide.port,
+        breakpoint,
+        run,
+        paused,
+        expression: value,
+        inspection,
+        mutation,
+        changed,
+      }
     } finally {
       await attempt(() => tool(ide, "stop_debug_session"))
     }
