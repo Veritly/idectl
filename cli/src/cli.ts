@@ -88,7 +88,6 @@ const browsers: Browser[] = [
     path: "/veritly/editor",
   },
   { id: "data", config: "Veritly Data Browser", key: "VITE_DATA_WEB_URL", path: "/veritly/workspace" },
-  { id: "metabase", config: "Veritly Metabase Browser", key: "VITE_METABASE_WEB_URL", path: "/" },
 ]
 
 const args = process.argv.slice(2)
@@ -873,7 +872,7 @@ veritly-ide ides
 veritly-ide open [PATH] [LINE] [--ide ID]
 veritly-ide services
 veritly-ide start|stop|status backend|frontend [--ide ID]
-veritly-ide attach frontend|activepieces|data|metabase|all [--ide ID]
+veritly-ide attach frontend|activepieces|data|all [--ide ID]
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
 veritly-ide debug configs|sessions|status|wait|inspect|vars|stack|source|threads|frame [...]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]

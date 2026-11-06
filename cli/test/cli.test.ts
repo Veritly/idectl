@@ -20,7 +20,7 @@ test("prints shell-friendly help", async () => {
   const help = await new Response(proc.stdout).text()
   expect(help).toContain("veritly-ide mcp tools")
   expect(help).toContain("veritly-ide debug commands | TOOL [JSON|-]")
-  expect(help).toContain("attach frontend|activepieces|data|metabase|all")
+  expect(help).toContain("attach frontend|activepieces|data|all")
   expect(help).toContain("veritly-ide office COMMAND")
   expect(await proc.exited).toBe(0)
 })
@@ -57,7 +57,7 @@ test("documents the inspection commands and one shared env", async () => {
   expect(`${backend}${frontend}`).not.toContain(".veritly/ide/frontend.env")
 
   const frames = await Promise.all(
-    ["Activepieces", "Data", "Metabase"].map((name) =>
+    ["Activepieces", "Data"].map((name) =>
       Bun.file(path.resolve(import.meta.dir, `../../../.run/Veritly_${name}_Browser.run.xml`)).exists(),
     ),
   )
