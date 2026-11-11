@@ -94,7 +94,7 @@ export function browser(
   const target = attach ? address(attach) : undefined
   const type = target
     ? `type="ChromiumRemoteDebugType" host="${xml(target.hostname.replace(/^\[|\]$/g, ""))}" port="${target.port}"`
-    : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="true"`
+    : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="false"`
   const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="Veritly Browser" ${type}>${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
   if (active && (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== text))
     throw new Error("Browser mappings changed; close this IDE project and reopen it to load the new configuration")

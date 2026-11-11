@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { browsers } from "./discovery"
 import { address, browser, prepare, scope } from "./project"
 
 type Json = Record<string, unknown>
@@ -205,6 +206,34 @@ async function sockets() {
       }
     })
     .filter((row): row is { port: number; process?: string; pid?: number } => Boolean(row))
+}
+
+async function launchedBrowser(ide: Endpoint) {
+  if (process.platform !== "linux") throw new Error("IDE browser discovery is supported on Linux VMs")
+  if (ide.id !== "webstorm" || !ide.pid) throw new Error("A verified WebStorm process is required")
+  for (let count = 0; count < 30; count++) {
+    const rows = browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), ide.pid)
+    const live = await sockets()
+    const found = rows.flatMap((row) => {
+      const file = path.join(row.profile, "DevToolsActivePort")
+      if (!fs.existsSync(file)) return []
+      const port = Number(fs.readFileSync(file, "utf8").split("\n")[0])
+      if (!Number.isInteger(port) || port < 1 || port > 65_535) return []
+      if (!live.some((socket) => socket.pid === row.pid && socket.port === port)) return []
+      return [{ pid: row.pid, endpoint: `http://127.0.0.1:${port}` }]
+    })
+    if (found.length > 1) throw new Error("WebStorm has multiple debug browsers; stop the other debug sessions first")
+    if (found.length === 1) {
+      const result = await fetch(`${found[0].endpoint}/json/version`, { signal: AbortSignal.timeout(3000) })
+      if (!result.ok) throw new Error(`Browser debug endpoint returned HTTP ${result.status}`)
+      const data: unknown = await result.json()
+      if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
+        throw new Error("The browser listener is not a Chromium debugging endpoint")
+      return { ok: true, ...found[0] }
+    }
+    await Bun.sleep(150)
+  }
+  throw new Error("WebStorm has no listening debug browser; start its JavaScript debug configuration first")
 }
 
 async function owner(row: { port: number; pid?: number; process?: string }) {
@@ -989,6 +1018,12 @@ async function close(values: string[]) {
     throw new Error(`Invalid IDE ownership record: ${file}`)
   if (state.closed === true) return { ok: true, project: dir, phase: "already-closed" }
   const live = (await endpoints()).find((item) => item.id === state.ide)
+  const children =
+    process.platform === "linux" && state.owned && live?.pid && state.ide === "webstorm"
+      ? browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), live.pid)
+          .map((item) => ({ pid: item.pid, token: stamp(item.pid) }))
+          .filter((item) => item.token)
+      : []
   if (live) {
     const list = rows(await tool(live, "list_debug_sessions", { project_path: dir }), "sessions")
     for (const item of list) {
@@ -1008,6 +1043,11 @@ async function close(values: string[]) {
   if (state.owned && peers.length) throw new Error("Other launcher projects use this IDE; close those projects first")
   const owned = state.owned === true && typeof state.token === "string" && stamp(state.pid) === state.token
   if (owned) {
+    const until = Date.now() + 3000
+    const running = () => children.some((item) => stamp(item.pid) === item.token)
+    while (Date.now() < until && running()) await Bun.sleep(100)
+    if (running())
+      return { ok: false, project: dir, phase: "stopping", reason: "WebStorm's browser is still shutting down" }
     const pid = state.pid
     const token = live?.pid ? stamp(live.pid) : undefined
     kill(pid)
@@ -1234,7 +1274,7 @@ veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
-veritly-ide debug configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
+veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
 veritly-ide debug commands [TOOL] | TOOL [JSON|-]
 veritly-ide mcp tools | call TOOL [JSON|-]
@@ -1342,6 +1382,10 @@ async function main() {
   if (group === "debug") {
     const ide = await endpoint()
     const action = args.shift()
+    if (action === "browser") {
+      print(await launchedBrowser(ide))
+      return 0
+    }
     if (action === "commands") {
       const name = args.shift()?.replaceAll("-", "_")
       if (name && !ide.tools.some((item) => item.name === name)) throw new Error(`unknown debug command ${name}`)
@@ -1422,7 +1466,12 @@ async function main() {
     } else if (action === "start") {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug start requires a configuration name")
-      print(await launch(ide, name))
+      const cfg = await config(ide, name)
+      const result = await launch(ide, name)
+      if (ide.id === "webstorm" && cfg.typeId === "JavascriptDebugType") {
+        const browser = await launchedBrowser(ide)
+        print({ ...(object(result) ? result : { result }), browser })
+      } else print(result)
     } else if (action === "run") {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug run requires a configuration name")

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import path from "node:path"
 import fs from "node:fs"
 import os from "node:os"
+import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
@@ -25,7 +26,7 @@ test("prints shell-friendly help", async () => {
 
 test("documents the inspection commands and one shared env", async () => {
   const help = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
-  expect(await new Response(help.stdout).text()).toContain("debug configs|sessions|status|wait|inspect|vars")
+  expect(await new Response(help.stdout).text()).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
   expect(await help.exited).toBe(0)
 
   const list = Bun.spawn(["bun", cli, "services"], { stdout: "pipe", stderr: "pipe" })
@@ -35,6 +36,17 @@ test("documents the inspection commands and one shared env", async () => {
 
   const skill = await Bun.file(path.resolve(import.meta.dir, "../../../.agents/skills/veritly-ide/SKILL.md")).text()
   expect(skill).toContain("DEBUG.md")
+})
+
+test("finds only debug browsers owned by the selected IDE", () => {
+  const rows = [
+    "10 1 webstorm",
+    "11 10 /usr/lib/chromium/chromium --user-data-dir=/tmp/ide profile --remote-debugging-port=0 about:blank",
+    "12 11 /usr/lib/chromium/chromium --type=renderer --user-data-dir=/tmp/ide profile --remote-debugging-port=0",
+    "13 1 /usr/lib/chromium/chromium --user-data-dir=/tmp/other --remote-debugging-port=0",
+    "14 10 /usr/lib/chromium/chromium --user-data-dir=/tmp/normal",
+  ].join("\n")
+  expect(browsers(rows, 10)).toEqual([{ pid: 11, profile: "/tmp/ide profile" }])
 })
 
 test("rejects a non-IDE listener without sending it an MCP request", async () => {
@@ -103,6 +115,7 @@ test("maps browser source URLs to this checkout without changing the indexing sc
     const file = path.join(project, ".idea/runConfigurations/Veritly_Browser.xml")
     const xml = fs.readFileSync(file, "utf8")
     expect(xml).toContain('uri="https://preview.test/assets/frame.html?a=1&amp;b=2"')
+    expect(xml).toContain('useFirstLineBreakpoints="false"')
     expect(xml).toContain(`url="https://preview.test/src" local-file="${component}/src"`)
     for (const url of ["/@fs//workspace", "/@fs/workspace", `/@fs/${root}`, `/@fs${root}`])
       expect(xml).toContain(`url="https://preview.test${url}" local-file="${root}"`)
