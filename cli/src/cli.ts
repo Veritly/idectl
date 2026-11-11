@@ -41,7 +41,7 @@ const root = path.resolve(import.meta.dir, "../../..")
 const file = path.join(root, ".env.local-cluster")
 const officeRoot = path.join(root, "vendor/veritly-office")
 const namespace = "veritly"
-const context = "k3d-veritly-dev"
+const context = "default"
 const ides: Ide[] = [
   { id: "intellij", name: "IntelliJ IDEA", port: 29190, bins: ["idea"], apps: ["intellij-idea"] },
   { id: "android-studio", name: "Android Studio", port: 29191, bins: ["studio"], apps: ["android-studio"] },
@@ -70,7 +70,7 @@ const specs: Spec[] = [
   },
   {
     id: "frontend",
-    workload: "opencode-frontend",
+    workload: "veritly-frontend-dev",
     config: "Veritly Frontend",
     mode: "run",
     key: "DEV_FRONTEND_PORT",
