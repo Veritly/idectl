@@ -23,25 +23,15 @@ type Endpoint = {
 type Spec = {
   id: string
   workload: string
-  config: string
-  mode: "debug" | "run"
   key: string
   remote: string
   program: string
   health: string
 }
-type Browser = {
-  id: string
-  config: string
-  key: string
-  path: string
-}
 
 const root = path.resolve(import.meta.dir, "../../..")
 const file = path.join(root, ".env.local-cluster")
-const officeRoot = path.join(root, "vendor/veritly-office")
 const namespace = "veritly"
-const context = "default"
 const ides: Ide[] = [
   { id: "intellij", name: "IntelliJ IDEA", port: 29190, bins: ["idea"], apps: ["intellij-idea"] },
   { id: "android-studio", name: "Android Studio", port: 29191, bins: ["studio"], apps: ["android-studio"] },
@@ -59,35 +49,13 @@ const ides: Ide[] = [
 ]
 const specs: Spec[] = [
   {
-    id: "backend",
-    workload: "opencode-api",
-    config: "Veritly Backend",
-    mode: "debug",
-    key: "DEV_BACKEND_PORT",
-    remote: "http",
-    program: "packages/opencode/src/server/main.ts",
-    health: "/readyz",
-  },
-  {
     id: "frontend",
     workload: "veritly-frontend-dev",
-    config: "Veritly Frontend",
-    mode: "run",
     key: "DEV_FRONTEND_PORT",
     remote: "http",
-    program: "packages/app/script/dev.ts",
+    program: "packages/app/node_modules/vite/bin/vite.js",
     health: "/",
   },
-]
-const browsers: Browser[] = [
-  { id: "frontend", config: "Veritly Frontend Browser", key: "PUBLIC_BASE_URL", path: "/" },
-  {
-    id: "activepieces",
-    config: "Veritly Activepieces Browser",
-    key: "VITE_ACTIVEPIECES_WEB_URL",
-    path: "/veritly/editor",
-  },
-  { id: "data", config: "Veritly Data Browser", key: "VITE_DATA_WEB_URL", path: "/veritly/workspace" },
 ]
 
 const args = process.argv.slice(2)
@@ -113,6 +81,7 @@ function flag(name: string) {
 const chosen = option("--ide")
 const override = option("--port")
 const session = option("--session")
+const project = option("--project")
 const frame = option("--frame")
 const details = flag("--inspect")
 
@@ -162,33 +131,6 @@ async function command(argv: string[], cwd = root, timeout?: number) {
   return stdout.trim()
 }
 
-async function office(values: string[]) {
-  const entrypoint = path.join(officeRoot, "script/veritly-office")
-  if (!fs.existsSync(entrypoint)) throw new Error(`Veritly Office submodule is not initialized at ${officeRoot}`)
-  const forwarded = [
-    ...(chosen ? ["--ide", chosen] : []),
-    ...(override ? ["--port", override] : []),
-    ...(session ? ["--session", session] : []),
-    ...(frame ? ["--frame", frame] : []),
-    ...values,
-  ]
-  const proc = Bun.spawn([entrypoint, ...forwarded], {
-    cwd: officeRoot,
-    env: process.env,
-    stdin: "inherit",
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ])
-  if (stdout) process.stdout.write(stdout)
-  if (stderr) process.stderr.write(stderr)
-  return code
-}
-
 async function attempt<T>(run: () => Promise<T>) {
   try {
     return { ok: true as const, value: await run() }
@@ -219,6 +161,16 @@ function launcher(ide: Ide) {
 }
 
 async function sockets() {
+  if (process.platform === "darwin") {
+    const text = await command(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"], root, 1000)
+    const owner: { pid?: number; process?: string } = {}
+    return text.split("\n").flatMap((line) => {
+      if (line.startsWith("p")) owner.pid = Number(line.slice(1))
+      if (line.startsWith("c")) owner.process = line.slice(1)
+      const port = line.startsWith("n") ? line.match(/:(\d+)$/) : undefined
+      return port ? [{ ...owner, port: Number(port[1]) }] : []
+    })
+  }
   const data = await attempt(() => command(["ss", "-H", "-ltnp"]))
   if (!data.ok) return []
   return data.value
@@ -233,6 +185,26 @@ async function sockets() {
       }
     })
     .filter((row): row is { port: number; process?: string; pid?: number } => Boolean(row))
+}
+
+async function owner(row: { port: number; pid?: number; process?: string }) {
+  if (!row.pid) return { verified: false, reason: "listener ownership is unavailable" }
+  const result = await attempt(() =>
+    process.platform === "linux"
+      ? Bun.file(`/proc/${row.pid}/cmdline`).text()
+      : command(["ps", "-p", String(row.pid), "-o", "command="], root, 1000),
+  )
+  if (!result.ok) return { verified: false, reason: `cannot inspect listener PID ${row.pid}` }
+  const verified =
+    /com\.intellij\.idea\.Main|com\.intellij\.platform\.ide\.bootstrap|\/Contents\/MacOS\/(webstorm|rustrover|idea|clion)\b/.test(
+      result.value,
+    )
+  return {
+    verified,
+    reason: verified
+      ? "JetBrains process verified"
+      : `port belongs to ${row.process || "another process"} (PID ${row.pid}), expected a JetBrains IDE`,
+  }
 }
 
 async function rpc(port: number, method: string, params: Json, timeout = 5_000) {
@@ -282,7 +254,7 @@ async function probe(port: number, proc?: string, pid?: number) {
 
 async function endpoints() {
   const live = await sockets()
-  const map = new Map(live.map((row) => [row.port, row]))
+  const map = new Map(live.filter((row) => identity(row.port, row.process)).map((row) => [row.port, row]))
   ides.forEach((ide) => {
     if (!map.has(ide.port)) map.set(ide.port, { port: ide.port })
   })
@@ -292,7 +264,26 @@ async function endpoints() {
     if (!map.has(port)) map.set(port, { port })
   }
   const rows = await Promise.all(
-    [...map.values()].map((row) => probe(row.port, row.process, row.pid).catch(() => undefined)),
+    [...map.values()].map(async (row) => {
+      if (!live.some((item) => item.port === row.port)) {
+        if (override && row.port === Number(override))
+          throw new Error(`Debugger port ${row.port} is not listening; start the IDE and enable Debugger MCP`)
+        return
+      }
+      const status = await owner(row)
+      if (!status.verified) {
+        if ((override && row.port === Number(override)) || (chosen && identity(row.port, row.process)?.id === chosen))
+          throw new Error(`Debugger port ${row.port}: ${status.reason}; no probe sent`)
+        return
+      }
+      const result = await attempt(() => probe(row.port, row.process, row.pid))
+      if (!result.ok) {
+        if (override || (chosen && identity(row.port, row.process)?.id === chosen))
+          throw new Error(`JetBrains owns port ${row.port}, but Debugger MCP is unavailable: ${result.error}`)
+        return
+      }
+      return result.value
+    }),
   )
   return rows.filter((row): row is Endpoint => Boolean(row)).sort((a, b) => a.port - b.port)
 }
@@ -343,7 +334,21 @@ async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 5_0
   const props = object(schema.inputSchema) && object(schema.inputSchema.properties) ? schema.inputSchema.properties : {}
   if (session && props.session_id && !args.session_id) args.session_id = session
   if (props.project_path) {
-    if (!args.project_path) args.project_path = root
+    if (!args.project_path) args.project_path = project ? path.resolve(project) : root
+  }
+  if (props.session_id && !args.session_id && !(name === "get_source_context" && args.file_path)) {
+    const result = content(
+      await rpc(ide.port, "tools/call", {
+        name: "list_debug_sessions",
+        arguments: { project_path: args.project_path },
+      }),
+    )
+    const live = rows(result, "sessions")
+    if (live.length > 1)
+      throw new Error(
+        `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}`,
+      )
+    if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
   }
   return content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
 }
@@ -384,19 +389,6 @@ function spec(name?: string) {
   return found
 }
 
-function browser(name?: string) {
-  const found = browsers.find((item) => item.id === name || item.config === name)
-  if (!found)
-    throw new Error(`unknown frontend ${name || ""}; expected ${browsers.map((item) => item.id).join("|")}|all`)
-  return found
-}
-
-function address(item: Browser) {
-  const base = vars()[item.key]
-  if (!base) throw new Error(`${item.key} is required in ${file}`)
-  return new URL(item.path, base).toString()
-}
-
 function port(item: Spec) {
   const value = Number(vars()[item.key])
   if (!Number.isInteger(value) || value < 1 || value > 65_535)
@@ -405,6 +397,7 @@ function port(item: Spec) {
 }
 
 async function tunnel() {
+  const context = await cluster()
   const status = await attempt(async () =>
     parse(await command(["telepresence", "status", "--format", "json"], root, 5_000)),
   )
@@ -416,26 +409,34 @@ async function tunnel() {
     if (daemon.status === "Connected")
       throw new Error(`Telepresence is connected to ${String(daemon.kubernetes_context)} without ${namespace} mapped`)
   }
-  return parse(
-    await command(
-      [
-        "telepresence",
-        "connect",
-        "--context",
-        context,
-        "--namespace",
-        namespace,
-        "--mapped-namespaces",
-        namespace,
-        "--format",
-        "json",
-        "--progress",
-        "quiet",
-      ],
-      root,
-      10_000,
-    ),
+  await command(
+    [
+      "telepresence",
+      "connect",
+      "--context",
+      context,
+      "--namespace",
+      namespace,
+      "--mapped-namespaces",
+      namespace,
+      "--format",
+      "json",
+      "--progress",
+      "quiet",
+    ],
+    root,
+    10_000,
   )
+  const current = parse(await command(["telepresence", "status", "--format", "json"], root, 5000))
+  if (!object(current) || !object(current.user_daemon) || current.user_daemon.status !== "Connected")
+    throw new Error("Telepresence connect returned without a connected daemon; run telepresence status")
+  return current
+}
+
+async function cluster() {
+  const value = (await command(["kubectl", "config", "current-context"], root, 1000)).trim()
+  if (!value) throw new Error("select this VM's Kubernetes context before connecting")
+  return value
 }
 
 async function workloads() {
@@ -479,7 +480,12 @@ function route(row: Json) {
 async function intercept(item: Spec) {
   const rows = await workloads()
   const active = rows.find((row) => row.name === item.workload && intercepted(row))
-  if (active) return { created: false, value: route(active) }
+  if (active) {
+    const value = route(active)
+    if (!value.intercepts.every((row) => row.target_host === "127.0.0.1" && row.target_port === port(item)))
+      throw new Error(`${item.workload} already forwards to a different target; existing intercept preserved`)
+    return { created: false, value }
+  }
   await command(
     [
       "telepresence",
@@ -549,6 +555,14 @@ async function ready(item: Spec) {
   return health(item)
 }
 
+function kill(pid: number) {
+  try {
+    process.kill(-pid, "SIGTERM")
+  } catch (err) {
+    if (!object(err) || err.code !== "ESRCH") throw err
+  }
+}
+
 function pids(item: Spec) {
   const target = path.join(root, item.program)
   return fs
@@ -560,7 +574,10 @@ function pids(item: Spec) {
       try {
         const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean)
         const cwd = fs.readlinkSync(`/proc/${pid}/cwd`)
-        const hit = cmd.includes(target) || (cwd === root && cmd.includes(item.program))
+        const hit =
+          cwd === path.join(root, "packages/app") &&
+          cmd.includes(target) &&
+          cmd.some((arg, index) => arg === "--port" && cmd[index + 1] === String(port(item)))
         return hit ? [{ pid, cmd }] : []
       } catch {
         return []
@@ -581,18 +598,61 @@ async function sessions(ide: Endpoint) {
   return rows(await tool(ide, "list_debug_sessions"), "sessions")
 }
 
-function run(item: Spec) {
+async function launch(ide: Endpoint, name: string) {
+  await config(ide, name)
+  const before = await sessions(ide)
+  const result = await attempt(() => tool(ide, "start_debug_session", { configuration_name: name }, 10_000))
+  if (result.ok) return result.value
+  if (!/timed?\s*out|timeout/i.test(result.error)) throw new Error(result.error)
+  const live = (await sessions(ide)).filter(
+    (row) =>
+      (row.name === name || row.runConfigurationName === name) &&
+      !before.some((old) => field(old, ["id", "sessionId"]) === field(row, ["id", "sessionId"])),
+  )
+  if (live.length === 1)
+    return {
+      status: "started",
+      verified: true,
+      message: "Start reply timed out; verified the new session without launching again",
+      session: live[0],
+    }
+  throw new Error(`Start reply timed out; launch outcome is unknown. Inspect debug sessions before repeating ${name}`)
+}
+
+async function run(item: Spec) {
   const dir = path.join(root, ".veritly/ide")
   fs.mkdirSync(dir, { recursive: true })
   const log = path.join(dir, `${item.id}.log`)
+  const host = (
+    await command(
+      ["kubectl", "get", "service", "kubernetes", "-n", "default", "-o", "jsonpath={.spec.clusterIP}"],
+      root,
+      2000,
+    )
+  ).trim()
+  if (!host) throw new Error("Kubernetes API service has no cluster IP; frontend cluster proxies cannot start")
   const fd = fs.openSync(log, "a", 0o600)
-  const proc = Bun.spawn(["setsid", "bun", "--no-install", item.program], {
-    cwd: root,
-    env: { ...process.env, ...vars(), NODE_ENV: "development" },
-    stdin: "ignore",
-    stdout: fd,
-    stderr: fd,
-  })
+  const proc = Bun.spawn(
+    [
+      "setsid",
+      "node",
+      path.join(root, item.program),
+      "--configLoader",
+      "runner",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port(item)),
+      "--strictPort",
+    ],
+    {
+      cwd: path.join(root, "packages/app"),
+      env: { ...process.env, ...vars(), NODE_ENV: "development", KUBERNETES_SERVICE_HOST: host },
+      stdin: "ignore",
+      stdout: fd,
+      stderr: fd,
+    },
+  )
   fs.closeSync(fd)
   proc.unref()
   return { pid: proc.pid, log }
@@ -600,17 +660,23 @@ function run(item: Spec) {
 
 async function start(item: Spec) {
   const ide = await endpoint()
-  if (item.mode === "debug") await config(ide, item.config)
   await tunnel()
-  const route = await intercept(item)
   const running = pids(item)
+  const listener = (await sockets()).find((row) => row.port === port(item))
+  if (listener && !running.some((row) => row.pid === listener.pid))
+    throw new Error(
+      `Port ${port(item)} belongs to ${listener.process || "an unverified process"} (PID ${listener.pid}); no intercept created`,
+    )
   if (running.length) {
     const check = await health(item)
+    if (!check.ok)
+      throw new Error(`${item.id} is running but its health check failed; inspect .veritly/ide/${item.id}.log`)
+    const route = await intercept(item)
     return {
       ok: check.ok,
       reused: true,
       service: item.id,
-      mode: item.mode,
+      mode: "run",
       ide: ide.id,
       env: file,
       port: port(item),
@@ -619,17 +685,16 @@ async function start(item: Spec) {
       intercept: route.value,
     }
   }
+  const launch = await run(item)
   try {
-    const launch =
-      item.mode === "debug"
-        ? await tool(ide, "start_debug_session", { configuration_name: item.config }, 10_000)
-        : run(item)
     const health = await ready(item)
+    if (!health.ok) throw new Error(`${item.id} failed to become healthy; inspect .veritly/ide/${item.id}.log`)
+    const route = await intercept(item)
     return {
       ok: health.ok,
       service: item.id,
       workload: item.workload,
-      mode: item.mode,
+      mode: "run",
       ide: ide.id,
       env: file,
       port: port(item),
@@ -638,33 +703,20 @@ async function start(item: Spec) {
       intercept: route.value,
     }
   } catch (err) {
-    if (route.created) await attempt(() => detach(item))
+    if (object(launch) && typeof launch.pid === "number") kill(launch.pid)
     throw err
   }
 }
 
 async function stop(item: Spec) {
-  const ide = await attempt(() => endpoint())
-  const stopped: unknown[] = []
-  if (ide.ok && item.mode === "debug") {
-    const live = await attempt(() => sessions(ide.value))
-    if (live.ok) {
-      for (const row of live.value.filter(
-        (entry) => entry.name === item.config || entry.configurationName === item.config,
-      )) {
-        const id = field(row, ["sessionId", "session_id", "id"])
-        stopped.push(await tool(ide.value, "stop_debug_session", id ? { session_id: id } : {}))
-      }
-    }
-  }
+  const route = await detach(item)
   const local = pids(item)
-  local.forEach((row) => process.kill(item.mode === "run" ? -row.pid : row.pid, "SIGTERM"))
+  local.forEach((row) => kill(row.pid))
   return {
     ok: true,
     service: item.id,
-    sessions: stopped,
     processes: local.map((row) => row.pid),
-    intercept: await detach(item),
+    intercept: route,
   }
 }
 
@@ -675,7 +727,7 @@ async function state(item: Spec) {
   return {
     service: item.id,
     workload: item.workload,
-    mode: item.mode,
+    mode: "run",
     env: file,
     port: port(item),
     running: pids(item),
@@ -693,7 +745,7 @@ async function open(values: string[]) {
   if (!ide) throw new Error(`unknown IDE ${chosen || ""}`)
   const bin = launcher(ide)
   if (!bin) throw new Error(`${ide.name} launcher was not found`)
-  const target = path.resolve(root, values.shift() || ".")
+  const target = path.resolve(root, values.shift() || project || ".")
   const line = values.shift()
   const argv = line ? [bin, "--line", line, target] : [bin, target]
   const proc = Bun.spawn(argv, { cwd: root, env: process.env, stdin: "ignore", stdout: "ignore", stderr: "ignore" })
@@ -702,6 +754,7 @@ async function open(values: string[]) {
 }
 
 async function doctor() {
+  const context = await cluster()
   const [active, telepresence, kube, service, manager] = await Promise.all([
     endpoints(),
     attempt(async () => parse(await command(["telepresence", "status", "--format", "json"]))),
@@ -768,10 +821,7 @@ async function doctor() {
       policies?.["/workspace"] === "Ignore" &&
       policies?.["/workspace/node_modules"] === "Ignore",
     ide: Boolean(selected),
-    configs:
-      specs.every((item) => loaded.includes(item.config)) &&
-      browsers.every((item) => loaded.includes(item.config)) &&
-      loaded.includes("Veritly IDE Breakpoint Test"),
+    project: runs.ok,
     services: specs.every((item) => names.includes(item.workload)),
   }
   return {
@@ -781,20 +831,25 @@ async function doctor() {
     namespace,
     context,
     checks,
-    tunnel: telepresence,
-    manager,
-    ides: installed,
+    project: project ? path.resolve(project) : root,
+    tunnel: daemon ? { status: daemon.status, context: daemon.kubernetes_context, namespaces: mapped } : telepresence,
+    manager: manager.ok ? { ready: checks.manager } : manager,
+    ides: installed.map((item) => ({
+      id: item.id,
+      installed: item.installed,
+      active: item.active,
+      port: item.endpoint?.port,
+      tools: item.endpoint?.tools.length,
+    })),
     selected: selected ? { id: selected.id, port: selected.port, tools: selected.tools.length } : undefined,
-    configurations: runs,
+    configurations: runs.ok ? loaded : runs,
     services: specs.map((item) => ({
       id: item.id,
       workload: item.workload,
-      mode: item.mode,
+      mode: "run",
       port: fs.existsSync(file) ? port(item) : undefined,
-      configuration: item.config,
       available: names.includes(item.workload),
     })),
-    frontends: browsers.map((item) => ({ id: item.id, url: address(item), configuration: item.config })),
   }
 }
 
@@ -816,8 +871,8 @@ async function smoke() {
       const ok = JSON.stringify(value).includes("42")
       if (!ok) throw new Error(`breakpoint evaluation did not return 42: ${JSON.stringify(value)}`)
       const inspection = await snapshot(ide, 0, ["input", "value"])
-      if (!JSON.stringify(inspection.variables).includes("42"))
-        throw new Error(`breakpoint variables did not include 42: ${JSON.stringify(inspection.variables)}`)
+      if (!JSON.stringify(inspection.evaluated).includes("42"))
+        throw new Error(`breakpoint variables did not include 42: ${JSON.stringify(inspection.evaluated)}`)
       const mutation = await tool(ide, "evaluate_expression", { expression: "value = 43" })
       const changed = await tool(ide, "evaluate_expression", { expression: "value" })
       if (!JSON.stringify(changed).includes("43"))
@@ -843,7 +898,8 @@ async function smoke() {
 }
 
 async function values(ide: Endpoint, names: string[], frame = 0) {
-  if (!names.length) return tool(ide, "get_variables", { frame_index: frame })
+  if (!names.length)
+    throw new Error("Choose expressions with debug vars NAME...; use debug get-variables JSON for the full scope")
   const results: unknown[] = []
   for (const expression of names)
     results.push(await tool(ide, "evaluate_expression", { expression, frame_index: frame }))
@@ -855,32 +911,60 @@ async function values(ide: Endpoint, names: string[], frame = 0) {
   }
 }
 
-async function snapshot(ide: Endpoint, frame = 0, names: string[] = []) {
-  const status = await tool(ide, "get_debug_session_status", { include_source_context: true, include_variables: true })
+function pause(value: unknown) {
+  if (!object(value)) throw new Error("debugger returned invalid session status")
+  return Object.fromEntries(
+    [
+      "waitResult",
+      "message",
+      "sessionId",
+      "name",
+      "state",
+      "pausedReason",
+      "currentLocation",
+      "breakpointHit",
+      "totalStackDepth",
+    ]
+      .filter((key) => value[key] !== undefined && value[key] !== null)
+      .map((key) => [key, value[key]]),
+  )
+}
+
+async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: unknown) {
+  const status =
+    value === undefined
+      ? await tool(ide, "get_debug_session_status", {
+          include_source_context: true,
+          include_variables: false,
+          source_context_lines: 3,
+          max_stack_frames: 5,
+        })
+      : value
   if (!object(status) || status.state !== "paused")
     throw new Error("variable inspection requires a paused session; use debug wait --inspect or debug pause")
-  const stack = await tool(ide, "get_stack_trace")
-  const variables = await values(ide, names, frame)
-  const source = await tool(ide, "get_source_context")
-  const threads = await tool(ide, "list_threads")
-  return { status, stack, variables, source, threads }
+  return {
+    ...pause(status),
+    stackSummary: Array.isArray(status.stackSummary) ? status.stackSummary.slice(0, 5) : [],
+    sourceContext: status.sourceContext,
+    ...(names.length ? { evaluated: await values(ide, names, frame) } : {}),
+  }
 }
 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
-veritly-ide office COMMAND... [--ide rustrover|vscode]
 veritly-ide ides
+veritly-ide connect
 veritly-ide open [PATH] [LINE] [--ide ID]
 veritly-ide services
-veritly-ide start|stop|status backend|frontend [--ide ID]
-veritly-ide attach frontend|activepieces|data|all [--ide ID]
+veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
-veritly-ide debug configs|sessions|status|wait|inspect|vars|stack|source|threads|frame [...]
+veritly-ide debug configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
-veritly-ide debug commands | TOOL [JSON|-]
+veritly-ide debug commands [TOOL] | TOOL [JSON|-]
 veritly-ide mcp tools | call TOOL [JSON|-]
 veritly-ide test breakpoint
 
-Use --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
+Use --project PATH, --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
+Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
 All result data is JSON on stdout. Errors are JSON on stderr.`
 
 async function main() {
@@ -889,7 +973,6 @@ async function main() {
     process.stdout.write(`${usage}\n`)
     return 0
   }
-  if (group === "office") return office(args)
   if (group === "doctor") {
     const value = await doctor()
     print(value)
@@ -900,9 +983,23 @@ async function main() {
     print(
       ides.map((ide) => {
         const bin = launcher(ide)
-        return { ...ide, installed: Boolean(bin), launcher: bin, endpoint: active.find((item) => item.id === ide.id) }
+        const live = active.find((item) => item.id === ide.id)
+        return {
+          id: ide.id,
+          installed: Boolean(bin),
+          launcher: bin,
+          port: ide.port,
+          pid: live?.pid,
+          active: Boolean(live),
+          tools: live?.tools.length,
+        }
       }),
     )
+    return 0
+  }
+  if (group === "connect") {
+    await tunnel()
+    print({ ok: true, context: await cluster(), namespace })
     return 0
   }
   if (group === "open" || group === "launch") {
@@ -914,10 +1011,9 @@ async function main() {
       specs.map((item) => ({
         id: item.id,
         workload: item.workload,
-        mode: item.mode,
-        port: port(item),
+        mode: "run",
+        key: item.key,
         env: file,
-        configuration: item.config,
       })),
     )
     return 0
@@ -930,22 +1026,6 @@ async function main() {
       return value.ok ? 0 : 1
     }
     print(group === "stop" ? await stop(item) : await state(item))
-    return 0
-  }
-  if (group === "attach") {
-    const name = args.shift()
-    const targets = name === "all" ? browsers : [browser(name)]
-    const ide = await endpoint()
-    await Promise.all(targets.map((item) => config(ide, item.config)))
-    const sessions = []
-    for (const item of targets) {
-      sessions.push({
-        frontend: item.id,
-        url: address(item),
-        session: await tool(ide, "start_debug_session", { configuration_name: item.config }, 10_000),
-      })
-    }
-    print({ sessions })
     return 0
   }
   if (group === "mcp") {
@@ -979,13 +1059,15 @@ async function main() {
     const ide = await endpoint()
     const action = args.shift()
     if (action === "commands") {
+      const name = args.shift()?.replaceAll("-", "_")
+      if (name && !ide.tools.some((item) => item.name === name)) throw new Error(`unknown debug command ${name}`)
       print(
-        ide.tools.map((item) => ({
-          command: typeof item.name === "string" ? item.name.replaceAll("_", "-") : item.name,
-          tool: item.name,
-          description: item.description,
-          inputSchema: item.inputSchema,
-        })),
+        ide.tools
+          .filter((item) => !name || item.name === name)
+          .map((item) => ({
+            command: typeof item.name === "string" ? item.name.replaceAll("_", "-") : item.name,
+            ...(name ? { description: item.description, inputSchema: item.inputSchema } : {}),
+          })),
       )
       return 0
     }
@@ -1000,13 +1082,30 @@ async function main() {
       "step-out": "step_out",
       stop: "stop_debug_session",
     }
-    if (action && map[action]) print(await tool(ide, map[action], await input(args), 30_000))
+    if (action && map[action])
+      print(
+        await tool(
+          ide,
+          map[action],
+          {
+            ...(action === "status"
+              ? { include_variables: false, include_source_context: false, max_stack_frames: 5 }
+              : {}),
+            ...(await input(args)),
+          },
+          30_000,
+        ),
+      )
     else if (action === "wait") {
       const timeout = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : 5
       if (timeout < 1) throw new Error("debug wait timeout must be positive")
-      const pause = await tool(ide, "wait_for_pause", { timeout }, 30_000)
+      const result = await tool(ide, "wait_for_pause", { timeout }, timeout * 1000 + 2000)
       if (!details && args.length) throw new Error("debug wait variable names require --inspect")
-      print(details ? { pause, ...(await snapshot(ide, index(), args)) } : pause)
+      print(
+        details && object(result) && result.state === "paused"
+          ? await snapshot(ide, index(), args, result)
+          : pause(result),
+      )
     } else if (action === "inspect") {
       const selected = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : index()
       print(await snapshot(ide, selected, args))
@@ -1017,8 +1116,11 @@ async function main() {
           ? await tool(ide, "get_variables", await input(args))
           : await values(ide, args, index()),
       )
-    } else if (action === "stack") print(await tool(ide, "get_stack_trace", await input(args)))
-    else if (action === "source") print(await tool(ide, "get_source_context", await input(args)))
+    } else if (action === "stack") print(await tool(ide, "get_stack_trace", { max_frames: 5, ...(await input(args)) }))
+    else if (action === "source")
+      print(await tool(ide, "get_source_context", { lines_before: 3, lines_after: 3, ...(await input(args)) }))
+    else if (action === "console")
+      print(await tool(ide, "get_console_output", { lines: 20, max_chars: 4000, ...(await input(args)) }))
     else if (action === "threads") print(await tool(ide, "list_threads", await input(args)))
     else if (action === "frame") {
       const frame = Number(args.shift())
@@ -1036,7 +1138,7 @@ async function main() {
     } else if (action === "start") {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug start requires a configuration name")
-      print(await tool(ide, "start_debug_session", { configuration_name: name }, 10_000))
+      print(await launch(ide, name))
     } else if (action === "run") {
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug run requires a configuration name")

@@ -8,10 +8,7 @@ test("lists the local service presets as JSON", async () => {
   const output = await new Response(proc.stdout).json()
   expect(await proc.exited).toBe(0)
   expect(output).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id: "backend", mode: "debug", port: 4096 }),
-      expect.objectContaining({ id: "frontend", mode: "run", port: 4444 }),
-    ]),
+    expect.arrayContaining([expect.objectContaining({ id: "frontend", mode: "run", key: "DEV_FRONTEND_PORT" })]),
   )
 })
 
@@ -19,24 +16,8 @@ test("prints shell-friendly help", async () => {
   const proc = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
   const help = await new Response(proc.stdout).text()
   expect(help).toContain("veritly-ide mcp tools")
-  expect(help).toContain("veritly-ide debug commands | TOOL [JSON|-]")
-  expect(help).toContain("attach frontend|activepieces|data|all")
-  expect(help).toContain("veritly-ide office COMMAND")
+  expect(help).toContain("veritly-ide debug commands [TOOL] | TOOL [JSON|-]")
   expect(await proc.exited).toBe(0)
-})
-
-test("delegates Office commands through the canonical submodule", async () => {
-  const proc = Bun.spawn(["bun", cli, "office", "help", "--ide", "vscode", "--port", "3999"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-  const output = await new Response(proc.stdout).text()
-  expect(await proc.exited).toBe(0)
-  expect(output).toContain("veritly-office")
-
-  const source = await Bun.file(cli).text()
-  expect(source).toContain('path.join(root, "vendor/veritly-office")')
-  expect(source).not.toContain("VERITLY_OFFICE_ROOT")
 })
 
 test("documents the inspection commands and one shared env", async () => {
@@ -49,21 +30,30 @@ test("documents the inspection commands and one shared env", async () => {
   expect(await list.exited).toBe(0)
   expect(services.every((item) => item.env.endsWith("/.env.local-cluster"))).toBe(true)
 
-  const backend = await Bun.file(path.resolve(import.meta.dir, "../../../.run/Veritly_Backend.run.xml")).text()
-  const frontend = await Bun.file(path.resolve(import.meta.dir, "../../../.run/Veritly_Frontend.run.xml")).text()
-  expect(backend.match(/--env-file=/g)).toHaveLength(1)
-  expect(frontend.match(/--env-file=/g)).toHaveLength(1)
-  expect(`${backend}${frontend}`).not.toContain(".veritly/ide/backend.env")
-  expect(`${backend}${frontend}`).not.toContain(".veritly/ide/frontend.env")
-
-  const frames = await Promise.all(
-    ["Activepieces", "Data"].map((name) =>
-      Bun.file(path.resolve(import.meta.dir, `../../../.run/Veritly_${name}_Browser.run.xml`)).exists(),
-    ),
-  )
-  expect(frames.every(Boolean)).toBe(true)
-
   const skill = await Bun.file(path.resolve(import.meta.dir, "../../../.agents/skills/veritly-ide/SKILL.md")).text()
-  expect(skill).toContain("Every Debugger MCP tool is wrapped")
-  expect(skill).toContain("attach all")
+  expect(skill).toContain("DEBUG.md")
+})
+
+test("rejects a non-IDE listener without sending it an MCP request", async () => {
+  const calls: string[] = []
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req) {
+      calls.push(req.url)
+      return Response.json({})
+    },
+  })
+  try {
+    const proc = Bun.spawn(["bun", cli, "debug", "status", "--port", String(server.port)], {
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const error = await new Response(proc.stderr).json()
+    expect(await proc.exited).toBe(1)
+    expect(error.error).toContain("no probe sent")
+    expect(calls).toHaveLength(0)
+  } finally {
+    server.stop(true)
+  }
 })
