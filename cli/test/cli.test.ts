@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import path from "node:path"
 import fs from "node:fs"
 import os from "node:os"
-import { browser, prepare, scope } from "../src/project"
+import { address, browser, prepare, scope } from "../src/project"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
@@ -113,7 +113,38 @@ test("maps browser source URLs to this checkout without changing the indexing sc
     expect(() => browser(root, component, project, "https://different.test/", true)).toThrow("reopen")
     expect(fs.readFileSync(file, "utf8")).toBe(xml)
     expect(() => browser(root, component, project, "file:///tmp/frame.html")).toThrow("HTTP(S)")
+    browser(root, component, project, "https://preview.test/", false, "http://127.0.0.1:35139")
+    const attached = fs.readFileSync(file, "utf8")
+    expect(attached).toContain('type="ChromiumRemoteDebugType" host="127.0.0.1" port="35139"')
+    expect(attached).toContain(`url="https://preview.test/src" local-file="${component}/src"`)
+    expect(attached).not.toContain('uri=')
+    expect(() => browser(root, component, project, "https://preview.test/", true, "http://127.0.0.1:35140")).toThrow("reopen")
+    expect(fs.readFileSync(file, "utf8")).toBe(attached)
+    for (const url of ["http://example.test:35139", "http://127.0.0.1:0", "http://127.0.0.1:35139/path", "ws://127.0.0.1:35139"])
+      expect(() => address(url)).toThrow("loopback HTTP")
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+test("rejects a non-browser attach listener without sending it HTTP", async () => {
+  const calls: string[] = []
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch(req) {
+      calls.push(req.url)
+      return Response.json({})
+    },
+  })
+  try {
+    const proc = Bun.spawn(["bun", cli, "open", path.resolve(import.meta.dir, ".."), "--url", "https://preview.test/", "--attach", `http://127.0.0.1:${server.port}`], { stdout: "pipe", stderr: "pipe" })
+    const error = await new Response(proc.stderr).json()
+    expect(await proc.exited).toBe(1)
+    expect(error.error).toContain("no probe sent")
+    expect(calls).toHaveLength(0)
+  } finally {
+    server.stop(true)
   }
 })

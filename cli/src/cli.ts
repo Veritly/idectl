@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { browser, prepare, scope } from "./project"
+import { address, browser, prepare, scope } from "./project"
 
 type Json = Record<string, unknown>
 type Ide = {
@@ -86,6 +86,7 @@ const project = option("--project")
 const frame = option("--frame")
 const details = flag("--inspect")
 const url = option("--url")
+const attach = option("--attach")
 
 function object(value: unknown): value is Json {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -825,6 +826,29 @@ async function open(values: string[]) {
     : scope(root, target!)
   const ide = ides.find((item) => item.id === (chosen || cfg.ide))
   if (!ide) throw new Error(`unknown IDE ${chosen || cfg.ide}`)
+  if (attach) {
+    if (!url) throw new Error("--attach requires --url with the application URL for source mappings")
+    if (ide.id !== "webstorm") throw new Error("--attach requires WebStorm")
+    const target = address(attach)
+    const socket = (await sockets()).find((row) => row.port === Number(target.port))
+    if (!socket?.pid)
+      throw new Error("Browser endpoint is not listening or its process ownership is unavailable; no probe sent")
+    const exe =
+      process.platform === "linux"
+        ? fs.realpathSync(`/proc/${socket.pid}/exe`)
+        : (await command(["ps", "-p", String(socket.pid), "-o", "comm="], root, 1000)).trim()
+    if (
+      !/^(chrome|chromium|chrome-headless-shell|headless_shell|Google Chrome(?: for Testing| Canary)?)$/i.test(
+        path.basename(exe),
+      )
+    )
+      throw new Error("Attach port does not belong to Chromium; no probe sent")
+    const res = await fetch(new URL("json/version", target), { signal: AbortSignal.timeout(3000) })
+    if (!res.ok) throw new Error(`Browser debug endpoint returned HTTP ${res.status}`)
+    const data: unknown = await res.json()
+    if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
+      throw new Error("Chromium listener did not return a browser debugging endpoint")
+  }
   const bin = launcher(ide)
   if (!bin) throw new Error(`${ide.name} is not installed; install it and the Debugger MCP plugin on this VM`)
   const line = values.shift()
@@ -836,7 +860,7 @@ async function open(values: string[]) {
   }
   if (!project) prepare(cfg as ReturnType<typeof scope>)
   if (url && ide.id !== "webstorm") throw new Error("--url requires WebStorm")
-  if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, Boolean(listener))
+  if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, Boolean(listener), attach)
   if (!listener) await settings(bin, cfg.project)
   const file = record(cfg.project)
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -901,7 +925,13 @@ async function open(values: string[]) {
       const runs = rows(await tool(live, "list_run_configurations", { project_path: cfg.project }), "configurations")
       if (
         url &&
-        !runs.some((item) => item.name === "Veritly Browser" && String(item.description).includes(new URL(url).href))
+        !runs.some(
+          (item) =>
+            item.name === "Veritly Browser" &&
+            (attach
+              ? item.typeId === "ChromiumRemoteDebugType"
+              : String(item.description).includes(new URL(url).href)),
+        )
       )
         throw new Error("Waiting for WebStorm to load Veritly Browser; reopen this project if its configuration is stale")
       return live
@@ -933,6 +963,7 @@ async function open(values: string[]) {
         log,
         context: ["--ide", ide.id, "--project", cfg.project],
         ...(url ? { configuration: "Veritly Browser", url: new URL(url).href } : {}),
+        ...(attach ? { endpoint: address(attach).origin } : {}),
       }
     }
     waiting.reason = ready.error.slice(0, 600)
@@ -1198,7 +1229,7 @@ async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
 veritly-ide ides
 veritly-ide connect
-veritly-ide open PATH [LINE] [--ide ID] [--url URL]
+veritly-ide open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
 veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
