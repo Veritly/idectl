@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test"
 import path from "node:path"
+import fs from "node:fs"
+import os from "node:os"
+import { prepare, scope } from "../src/project"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
@@ -55,5 +58,36 @@ test("rejects a non-IDE listener without sending it an MCP request", async () =>
     expect(calls).toHaveLength(0)
   } finally {
     server.stop(true)
+  }
+})
+
+test("selects each runtime and points the small project at real source without copying it", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ide-project-")))
+  try {
+    const root = path.join(dir, "repo")
+    for (const [name, manifest, file, ide] of [
+      ["ui", "package.json", "main.tsx", "webstorm"],
+      ["api", "Cargo.toml", "main.rs", "rustrover"],
+    ]) {
+      const component = path.join(root, name)
+      fs.mkdirSync(path.join(component, "src"), { recursive: true })
+      fs.writeFileSync(path.join(component, manifest), "")
+      fs.writeFileSync(path.join(component, "src", file), "actual source")
+      const value = scope(root, path.join(component, "src", file), dir)
+      expect(value.ide).toBe(ide)
+      expect(value.content).toBe(path.join(component, "src"))
+      prepare(value)
+      expect(fs.readFileSync(path.join(value.project, ".idea/source.iml"), "utf8")).toContain(value.content)
+      const cfg = path.join(value.project, ".idea/source.iml")
+      const stamp = fs.statSync(cfg, { bigint: true }).mtimeNs
+      prepare(value)
+      expect(fs.statSync(cfg, { bigint: true }).mtimeNs).toBe(stamp)
+      expect(fs.existsSync(path.join(value.project, "src"))).toBe(false)
+      expect(scope(root, component, dir).project).toBe(value.project)
+    }
+    expect(() => scope(root, root, dir)).toThrow("repository root")
+    expect(() => scope(root, dir, dir)).toThrow("repository root")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })

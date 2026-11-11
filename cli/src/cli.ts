@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { prepare, scope } from "./project"
 
 type Json = Record<string, unknown>
 type Ide = {
@@ -111,8 +112,8 @@ function parse(value: string) {
   return data
 }
 
-async function command(argv: string[], cwd = root, timeout?: number) {
-  const proc = Bun.spawn(argv, { cwd, env: process.env, stdout: "pipe", stderr: "pipe" })
+async function command(argv: string[], cwd = root, timeout?: number, env = process.env) {
+  const proc = Bun.spawn(argv, { cwd, env, stdout: "pipe", stderr: "pipe" })
   const state = { timed: false }
   const timer = timeout
     ? setTimeout(() => {
@@ -156,6 +157,23 @@ function launcher(ide: Ide) {
         if (fs.existsSync(target)) return target
       }
     }
+  }
+  const opt = path.join(os.homedir(), ".local/opt")
+  if (!fs.existsSync(opt)) return
+  for (const dir of fs
+    .readdirSync(opt)
+    .filter((dir) => dir.toLowerCase().startsWith(ide.id))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
+    const file = path.join(opt, dir, "product-info.json")
+    if (!fs.existsSync(file)) continue
+    const data: unknown = JSON.parse(fs.readFileSync(file, "utf8"))
+    if (!object(data) || !Array.isArray(data.launch)) continue
+    const launch = data.launch
+      .filter(object)
+      .find((item) => item.os === (process.platform === "linux" ? "Linux" : "macOS"))
+    if (!launch || typeof launch.launcherPath !== "string") continue
+    const bin = path.join(opt, dir, launch.launcherPath)
+    return fs.existsSync(`${bin}.sh`) ? `${bin}.sh` : bin
   }
   return
 }
@@ -736,21 +754,232 @@ async function state(item: Spec) {
   }
 }
 
+function record(dir: string) {
+  const key = new Bun.CryptoHasher("sha256").update(dir).digest("hex").slice(0, 16)
+  return path.join(root, ".veritly/ide/open", `${key}.json`)
+}
+
+function stamp(pid: number) {
+  try {
+    const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")
+    if (value[0] !== "Z") return value[19]
+  } catch (err) {
+    if (!object(err) || err.code !== "ENOENT") throw err
+  }
+}
+
+async function settings(bin: string, dir: string) {
+  const file = path.join(path.dirname(path.dirname(fs.realpathSync(bin))), "product-info.json")
+  if (!fs.existsSync(file)) return
+  const info: unknown = JSON.parse(fs.readFileSync(file, "utf8"))
+  if (!object(info) || typeof info.dataDirectoryName !== "string")
+    throw new Error(`Invalid IDE product metadata: ${file}`)
+  const base =
+    process.platform === "darwin"
+      ? path.join(os.homedir(), "Library/Application Support/JetBrains")
+      : path.join(os.homedir(), ".config/JetBrains")
+  await command(
+    [
+      "python3",
+      "-c",
+      `
+from pathlib import Path
+from xml.etree import ElementTree as E
+import sys
+root=Path(sys.argv[1]);root.mkdir(parents=True,exist_ok=True)
+def load(name):
+ p=root/name
+ return p,E.parse(p).getroot() if p.exists() else E.Element('application')
+def child(root,tag,attrs):
+ value=next((x for x in root if x.tag==tag and all(x.get(k)==v for k,v in attrs.items())),None)
+ return E.SubElement(root,tag,attrs) if value is None else value
+p,tree=load('trusted-paths.xml')
+c=child(tree,'component',{'name':'Trusted.Paths'})
+m=child(child(c,'option',{'name':'TRUSTED_PROJECT_PATHS'}),'map',{})
+child(m,'entry',{'key':sys.argv[2]}).set('value','true')
+E.ElementTree(tree).write(p,encoding='unicode')
+p,tree=load('other.xml')
+c=child(tree,'component',{'name':'PropertiesComponent'})
+child(c,'property',{'name':'power.save.mode'}).set('value','true')
+E.ElementTree(tree).write(p,encoding='unicode')
+`,
+      path.join(base, info.dataDirectoryName, "options"),
+      dir,
+    ],
+    root,
+    2000,
+  )
+}
+
 async function open(values: string[]) {
-  const active = await endpoints()
-  const ide = chosen
-    ? ides.find((item) => item.id === chosen)
-    : ides.find((item) => item.id === active.find((row) => row.id === "webstorm")?.id) ||
-      ides.find((item) => launcher(item))
-  if (!ide) throw new Error(`unknown IDE ${chosen || ""}`)
+  const target = values.shift()
+  if (!target && !project) throw new Error("open requires a component directory or source file")
+  const cfg = project
+    ? {
+        project: path.resolve(project),
+        source: path.resolve(root, target || project),
+        file: fs.statSync(path.resolve(root, target || project)).isFile(),
+        ide: chosen || "webstorm",
+      }
+    : scope(root, target!)
+  const ide = ides.find((item) => item.id === (chosen || cfg.ide))
+  if (!ide) throw new Error(`unknown IDE ${chosen || cfg.ide}`)
   const bin = launcher(ide)
-  if (!bin) throw new Error(`${ide.name} launcher was not found`)
-  const target = path.resolve(root, values.shift() || project || ".")
+  if (!bin) throw new Error(`${ide.name} is not installed; install it and the Debugger MCP plugin on this VM`)
   const line = values.shift()
-  const argv = line ? [bin, "--line", line, target] : [bin, target]
-  const proc = Bun.spawn(argv, { cwd: root, env: process.env, stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+  if (line && (!Number.isInteger(Number(line)) || Number(line) < 1)) throw new Error("line must be a positive integer")
+  const listener = (await sockets()).find((row) => row.port === ide.port)
+  if (listener) {
+    const status = await owner(listener)
+    if (!status.verified) throw new Error(`Port ${ide.port}: ${status.reason}; no IDE launched`)
+  }
+  if (!project) prepare(cfg as ReturnType<typeof scope>)
+  if (!listener) await settings(bin, cfg.project)
+  const file = record(cfg.project)
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+  const previous: unknown = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined
+  const display =
+    process.env.DISPLAY ||
+    (listener?.pid && process.platform === "linux"
+      ? fs
+          .readFileSync(`/proc/${listener.pid}/environ`, "utf8")
+          .split("\0")
+          .find((item) => item.startsWith("DISPLAY="))
+          ?.slice(8)
+      : undefined)
+  const argv = [bin, cfg.project]
+  if (process.platform === "linux" && !display) {
+    if (!Bun.which("xvfb-run") || !Bun.which("xauth"))
+      throw new Error("Headless IDE launch requires xvfb-run and xauth on this VM")
+    argv.unshift("xvfb-run", "-a", "--server-args=-screen 0 1440x900x24 -nolisten tcp")
+  }
+  if (process.platform === "linux") argv.unshift("setsid")
+  const log = file.replace(/\.json$/, ".log")
+  const fd = fs.openSync(log, "a", 0o600)
+  const proc = Bun.spawn(argv, {
+    cwd: root,
+    env: { ...process.env, ...(display ? { DISPLAY: display } : {}) },
+    stdin: "ignore",
+    stdout: fd,
+    stderr: fd,
+  })
+  fs.closeSync(fd)
   proc.unref()
-  return { ok: true, ide: ide.id, launcher: bin, pid: proc.pid, path: target, ...(line ? { line: Number(line) } : {}) }
+  const state = {
+    ide: ide.id,
+    project: cfg.project,
+    source: cfg.source,
+    pid: proc.pid,
+    token: process.platform === "linux" ? stamp(proc.pid) : undefined,
+    owned: process.platform === "linux" && !listener,
+    ...(object(previous) &&
+    previous.owned === true &&
+    typeof previous.token === "string" &&
+    previous.closed !== true &&
+    typeof previous.pid === "number" &&
+    stamp(previous.pid) === previous.token
+      ? { pid: previous.pid, token: previous.token, owned: true }
+      : {}),
+    log,
+    closed: false,
+  }
+  fs.writeFileSync(file, JSON.stringify(state), { mode: 0o600 })
+  const waiting = { reason: "Waiting for the IDE and Debugger MCP project to load" }
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null && proc.exitCode !== 0)
+      throw new Error(`${ide.name} launch failed (${proc.exitCode}); inspect ${log}`)
+    const ready = await attempt(async () => {
+      const live = (await endpoints()).find((item) => item.id === ide.id)
+      if (!live)
+        throw new Error(
+          `Waiting for ${ide.name} Debugger MCP on port ${ide.port}; check ${log} if startup does not finish`,
+        )
+      await tool(live, "list_run_configurations", { project_path: cfg.project })
+      return live
+    })
+    if (ready.ok) {
+      fs.writeFileSync(file, JSON.stringify({ ...state, bridge: ready.value.pid }), { mode: 0o600 })
+      if (cfg.file) {
+        const screen =
+          display ||
+          (process.platform === "linux" && ready.value.pid
+            ? fs
+                .readFileSync(`/proc/${ready.value.pid}/environ`, "utf8")
+                .split("\0")
+                .find((item) => item.startsWith("DISPLAY="))
+                ?.slice(8)
+            : undefined)
+        await command([bin, "--line", line || "1", cfg.source], root, 5000, {
+          ...process.env,
+          ...(screen ? { DISPLAY: screen } : {}),
+        })
+      }
+      return {
+        ok: true,
+        phase: "ide-ready",
+        ide: ide.id,
+        project: cfg.project,
+        pid: ready.value.pid,
+        port: ide.port,
+        log,
+        context: ["--ide", ide.id, "--project", cfg.project],
+      }
+    }
+    waiting.reason = ready.error.slice(0, 600)
+    await Bun.sleep(500)
+  }
+  return {
+    ok: false,
+    phase: "starting",
+    ...state,
+    reason: waiting.reason,
+    context: ["--ide", ide.id, "--project", cfg.project],
+  }
+}
+
+async function close(values: string[]) {
+  const target = values.shift()
+  if (!target && !project) throw new Error("close requires a component path or --project from open")
+  const dir = project ? path.resolve(project) : scope(root, target!).project
+  const file = record(dir)
+  if (!fs.existsSync(file)) throw new Error(`No launcher-owned IDE record for ${dir}`)
+  const state: unknown = JSON.parse(fs.readFileSync(file, "utf8"))
+  if (!object(state) || typeof state.pid !== "number" || typeof state.ide !== "string")
+    throw new Error(`Invalid IDE ownership record: ${file}`)
+  if (state.closed === true) return { ok: true, project: dir, phase: "already-closed" }
+  const live = (await endpoints()).find((item) => item.id === state.ide)
+  if (live) {
+    const list = rows(await tool(live, "list_debug_sessions", { project_path: dir }), "sessions")
+    for (const item of list) {
+      const id = field(item, ["id", "sessionId"])
+      if (!id) throw new Error("Debug session has no ID; cannot stop it safely")
+      await tool(live, "stop_debug_session", { project_path: dir, session_id: id })
+    }
+  }
+  const peers = fs
+    .readdirSync(path.dirname(file))
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => path.join(path.dirname(file), name))
+    .filter((name) => name !== file)
+    .map((name) => JSON.parse(fs.readFileSync(name, "utf8")) as unknown)
+    .filter(object)
+    .filter((item) => item.closed !== true && item.bridge && item.bridge === state.bridge)
+  if (state.owned && peers.length) throw new Error("Other launcher projects use this IDE; close those projects first")
+  const owned = state.owned === true && typeof state.token === "string" && stamp(state.pid) === state.token
+  if (owned) {
+    const pid = state.pid
+    const token = live?.pid ? stamp(live.pid) : undefined
+    kill(pid)
+    const deadline = Date.now() + 5000
+    const pending = () =>
+      stamp(pid) === state.token ||
+      (typeof live?.pid === "number" && typeof token === "string" && stamp(live.pid) === token)
+    while (Date.now() < deadline && pending()) await Bun.sleep(100)
+    if (pending()) return { ok: false, project: dir, phase: "stopping", reason: "IDE shutdown is still in progress" }
+  }
+  fs.writeFileSync(file, JSON.stringify({ ...state, closed: true }), { mode: 0o600 })
+  return { ok: true, project: dir, phase: owned || !live ? "stopped" : "shared-ide-kept-running" }
 }
 
 async function doctor() {
@@ -953,7 +1182,8 @@ async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
 veritly-ide ides
 veritly-ide connect
-veritly-ide open [PATH] [LINE] [--ide ID]
+veritly-ide open PATH [LINE] [--ide ID]
+veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
@@ -964,6 +1194,7 @@ veritly-ide mcp tools | call TOOL [JSON|-]
 veritly-ide test breakpoint
 
 Use --project PATH, --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
+open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
 All result data is JSON on stdout. Errors are JSON on stderr.`
 
@@ -1003,8 +1234,14 @@ async function main() {
     return 0
   }
   if (group === "open" || group === "launch") {
-    print(await open(args))
-    return 0
+    const value = await open(args)
+    print(value)
+    return value.ok ? 0 : 2
+  }
+  if (group === "close") {
+    const value = await close(args)
+    print(value)
+    return value.ok ? 0 : 2
   }
   if (group === "services") {
     print(
