@@ -54,7 +54,27 @@ export function prepare(value: ReturnType<typeof scope>) {
     )
 }
 
+export function browser(root: string, component: string, project: string, url: string, active = false) {
+  const page = new URL(url)
+  if (!["http:", "https:"].includes(page.protocol)) throw new Error("Browser debugging requires an HTTP(S) URL")
+  const mappings = [
+    [`${page.origin}/src`, path.join(component, "src")],
+    [`${page.origin}/@fs//workspace`, root],
+    [`${page.origin}/@fs/workspace`, root],
+    [`${page.origin}/@fs/${root}`, root],
+    [`${page.origin}/@fs${root}`, root],
+  ]
+  const dir = path.join(project, ".idea/runConfigurations")
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, "Veritly_Browser.xml")
+  const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="Veritly Browser" type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="true">${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
+  if (active && (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== text))
+    throw new Error("Browser mappings changed; close this IDE project and reopen it to load the new configuration")
+  return save(file, text)
+}
+
 function save(file: string, value: string) {
-  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === value) return
+  if (fs.existsSync(file) && fs.readFileSync(file, "utf8") === value) return false
   fs.writeFileSync(file, value)
+  return true
 }

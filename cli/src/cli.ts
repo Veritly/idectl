@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { prepare, scope } from "./project"
+import { browser, prepare, scope } from "./project"
 
 type Json = Record<string, unknown>
 type Ide = {
@@ -85,6 +85,7 @@ const session = option("--session")
 const project = option("--project")
 const frame = option("--frame")
 const details = flag("--inspect")
+const url = option("--url")
 
 function object(value: unknown): value is Json {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -834,6 +835,8 @@ async function open(values: string[]) {
     if (!status.verified) throw new Error(`Port ${ide.port}: ${status.reason}; no IDE launched`)
   }
   if (!project) prepare(cfg as ReturnType<typeof scope>)
+  if (url && ide.id !== "webstorm") throw new Error("--url requires WebStorm")
+  if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, Boolean(listener))
   if (!listener) await settings(bin, cfg.project)
   const file = record(cfg.project)
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -895,7 +898,12 @@ async function open(values: string[]) {
         throw new Error(
           `Waiting for ${ide.name} Debugger MCP on port ${ide.port}; check ${log} if startup does not finish`,
         )
-      await tool(live, "list_run_configurations", { project_path: cfg.project })
+      const runs = rows(await tool(live, "list_run_configurations", { project_path: cfg.project }), "configurations")
+      if (
+        url &&
+        !runs.some((item) => item.name === "Veritly Browser" && String(item.description).includes(new URL(url).href))
+      )
+        throw new Error("Waiting for WebStorm to load Veritly Browser; reopen this project if its configuration is stale")
       return live
     })
     if (ready.ok) {
@@ -924,6 +932,7 @@ async function open(values: string[]) {
         port: ide.port,
         log,
         context: ["--ide", ide.id, "--project", cfg.project],
+        ...(url ? { configuration: "Veritly Browser", url: new URL(url).href } : {}),
       }
     }
     waiting.reason = ready.error.slice(0, 600)
@@ -975,8 +984,15 @@ async function close(values: string[]) {
     const pending = () =>
       stamp(pid) === state.token ||
       (typeof live?.pid === "number" && typeof token === "string" && stamp(live.pid) === token)
-    while (Date.now() < deadline && pending()) await Bun.sleep(100)
-    if (pending()) return { ok: false, project: dir, phase: "stopping", reason: "IDE shutdown is still in progress" }
+    const listening = async () => (await sockets()).some((row) => row.port === live?.port)
+    while (Date.now() < deadline && (pending() || (await listening()))) await Bun.sleep(100)
+    if (pending() || (await listening()))
+      return {
+        ok: false,
+        project: dir,
+        phase: "stopping",
+        reason: "IDE shutdown or debugger listener cleanup is still in progress",
+      }
   }
   fs.writeFileSync(file, JSON.stringify({ ...state, closed: true }), { mode: 0o600 })
   return { ok: true, project: dir, phase: owned || !live ? "stopped" : "shared-ide-kept-running" }
@@ -1182,7 +1198,7 @@ async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
 veritly-ide ides
 veritly-ide connect
-veritly-ide open PATH [LINE] [--ide ID]
+veritly-ide open PATH [LINE] [--ide ID] [--url URL]
 veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]

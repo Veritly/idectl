@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import path from "node:path"
 import fs from "node:fs"
 import os from "node:os"
-import { prepare, scope } from "../src/project"
+import { browser, prepare, scope } from "../src/project"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
@@ -87,6 +87,32 @@ test("selects each runtime and points the small project at real source without c
     }
     expect(() => scope(root, root, dir)).toThrow("repository root")
     expect(() => scope(root, dir, dir)).toThrow("repository root")
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+test("maps browser source URLs to this checkout without changing the indexing scope", () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ide-browser-")))
+  try {
+    const root = path.join(dir, "repo")
+    const component = path.join(root, "packages/web")
+    const project = path.join(dir, "project")
+    expect(browser(root, component, project, "https://preview.test/assets/frame.html?a=1&b=2")).toBe(true)
+    const file = path.join(project, ".idea/runConfigurations/Veritly_Browser.xml")
+    const xml = fs.readFileSync(file, "utf8")
+    expect(xml).toContain('uri="https://preview.test/assets/frame.html?a=1&amp;b=2"')
+    expect(xml).toContain(`url="https://preview.test/src" local-file="${component}/src"`)
+    for (const url of ["/@fs//workspace", "/@fs/workspace", `/@fs/${root}`, `/@fs${root}`])
+      expect(xml).toContain(`url="https://preview.test${url}" local-file="${root}"`)
+    expect(fs.existsSync(path.join(project, ".idea/source.iml"))).toBe(false)
+    const stamp = fs.statSync(file, { bigint: true }).mtimeNs
+    expect(browser(root, component, project, "https://preview.test/assets/frame.html?a=1&b=2", true)).toBe(false)
+    expect(fs.statSync(file, { bigint: true }).mtimeNs).toBe(stamp)
+    expect(() => browser(root, component, project, "https://different.test/", true)).toThrow("reopen")
+    expect(fs.readFileSync(file, "utf8")).toBe(xml)
+    expect(() => browser(root, component, project, "file:///tmp/frame.html")).toThrow("HTTP(S)")
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
