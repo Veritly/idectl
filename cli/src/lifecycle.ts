@@ -4,7 +4,7 @@ import { browsers } from "./discovery"
 import { scope, prepare, browser, address } from "./project"
 import { root, ides, object, command, attempt, launcher, sockets, owner, record, stamp, rows, field } from "./core"
 import type { Json, Endpoint } from "./core"
-import { settings, data } from "./setup"
+import { settings } from "./setup"
 
 type Context = {
   project?: string
@@ -73,20 +73,8 @@ export function lifecycle(ctx: Context) {
       if (!status.verified) throw new Error(`Port ${ide.port}: ${status.reason}; no IDE launched`)
     }
     if (!project) prepare(cfg as ReturnType<typeof scope>)
-    const runtime = "component" in cfg && cfg.ide === "rustrover" && cfg.component === path.join(root, "packages/veritly-data/runtime")
-      ? await data(tunnel)
-      : undefined
-    if (listener && runtime) {
-      if (!listener.pid || process.platform !== "linux") throw new Error("Cannot inspect the running RustRover environment")
-      const current = Object.fromEntries(fs.readFileSync(`/proc/${listener.pid}/environ`, "utf8").split("\0").filter((item) => item.includes("=")).map((item) => {
-        const pos = item.indexOf("=")
-        return [item.slice(0, pos), item.slice(pos + 1)]
-      }))
-      if (Object.entries(runtime).some(([name, value]) => current[name] !== value))
-        throw new Error("RustRover is already running with a different environment; close its existing project before opening Data")
-    }
     if (url && ide.id !== "webstorm") throw new Error("--url requires WebStorm")
-    if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, Boolean(listener), attach)
+    if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, attach)
     if (!listener) await settings(bin, cfg.project, ide)
     const file = record(cfg.project)
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -107,7 +95,7 @@ export function lifecycle(ctx: Context) {
     const fd = fs.openSync(log, "a", 0o600)
     const proc = Bun.spawn(argv, {
       cwd: root,
-      env: { ...process.env, ...runtime, DISPLAY: display, XAUTHORITY: auth },
+      env: { ...process.env, DISPLAY: display, XAUTHORITY: auth },
       stdin: "ignore",
       stdout: fd,
       stderr: fd,
@@ -127,6 +115,8 @@ export function lifecycle(ctx: Context) {
       owned: Boolean(old) || (process.platform === "linux" && !listener),
       log,
       closed: false,
+      url: url ? new URL(url).href : object(previous) && typeof previous.url === "string" ? previous.url : undefined,
+      endpoint: attach ? address(attach).origin : url ? undefined : object(previous) && typeof previous.endpoint === "string" ? previous.endpoint : undefined,
     }
     fs.writeFileSync(file, JSON.stringify(state), { mode: 0o600 })
     const waiting = { reason: "Waiting for the IDE and Debugger MCP project to load" }

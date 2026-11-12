@@ -29,19 +29,22 @@ export function errors(rows: { text: string; time: number; source: string }[]) {
 
 export async function tab(endpoint: string, url: string) {
   const base = new URL(endpoint)
-  if (base.protocol !== "http:" || base.hostname !== "127.0.0.1" || !base.port)
+  if (base.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) || !base.port)
     throw new Error("Browser endpoint must be a verified loopback listener")
   const response = await fetch(new URL("/json/list", base), { signal: AbortSignal.timeout(3000) })
   if (!response.ok) throw new Error(`Browser target list returned HTTP ${response.status}`)
   const data: unknown = await response.json()
   if (!Array.isArray(data)) throw new Error("Browser target list is invalid")
   const origin = new URL(url).origin
-  const found = data.filter((item): item is Json => {
+  const pages = data.filter((item): item is Json => {
     if (!object(item)) throw new Error("Browser returned an invalid target")
     if (item.type !== "page") return false
     if (typeof item.url !== "string") throw new Error("Browser page has no URL")
-    return new URL(item.url).origin === origin
+    return true
   })
+  const found = pages.filter((item) => typeof item.url === "string" && new URL(item.url).origin === origin)
+  if (!found.length && pages.length === 1 && typeof pages[0].url === "string")
+    throw new Error(`Browser is at ${new URL(pages[0].url).origin} instead of ${origin}; it may have redirected for sign-in`)
   if (found.length !== 1) throw new Error(`Expected one browser tab for ${origin}; found ${found.length}`)
   const value = found[0].webSocketDebuggerUrl
   if (typeof value !== "string") throw new Error("Browser tab has no debugging endpoint")

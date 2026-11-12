@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, content, rows, field } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string }
@@ -14,6 +14,25 @@ export function debuggerClient(opts: Options) {
   async function launchedBrowser(ide: Endpoint) {
     if (process.platform !== "linux") throw new Error("IDE browser discovery is supported on Linux VMs")
     if (ide.id !== "webstorm" || !ide.pid) throw new Error("A verified WebStorm process is required")
+    const dir = project ? path.resolve(project) : opened(ide)
+    const file = dir ? record(dir) : undefined
+    const state: unknown = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined
+    if (object(state) && typeof state.endpoint === "string") {
+      if (state.closed !== false || state.ide !== ide.id || state.bridge !== ide.pid) throw new Error("Recorded browser belongs to a different IDE project")
+      const target = new URL(state.endpoint)
+      if (target.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) || !target.port) throw new Error("Recorded browser endpoint is invalid")
+      const socket = (await sockets()).find((item) => item.port === Number(target.port))
+      if (!socket?.pid) throw new Error("Recorded browser is not listening")
+      const exe = path.basename(fs.realpathSync(`/proc/${socket.pid}/exe`))
+      if (!/^(chrome|chromium|chrome-headless-shell|headless_shell|Google Chrome(?: for Testing| Canary)?)$/i.test(exe))
+        throw new Error("Recorded browser listener is not Chromium")
+      const response = await fetch(new URL("/json/version", target), { signal: AbortSignal.timeout(3000) })
+      if (!response.ok) throw new Error(`Browser debug endpoint returned HTTP ${response.status}`)
+      const data: unknown = await response.json()
+      if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
+        throw new Error("The browser listener is not a Chromium debugging endpoint")
+      return { ok: true, pid: socket.pid, endpoint: target.origin }
+    }
     for (let count = 0; count < 30; count++) {
       const rows = browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), ide.pid)
       const live = await sockets()

@@ -1,9 +1,10 @@
 import path from "node:path"
 import { scope } from "./project"
 import { inspect, mounted, reload, tab } from "./browser"
-import { root, object, attempt, rows, field } from "./core"
+import { root, object, attempt, rows, field, record } from "./core"
 import type { Endpoint } from "./core"
 import type { debuggerClient } from "./debugger"
+import { port, spec } from "./service"
 
 export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project?: string; url?: string }) {
   const project = opts.project
@@ -14,6 +15,24 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
   const configs = debug.configs
   const config = debug.config
   const launchedBrowser = debug.launchedBrowser
+  async function frontend(seconds: number) {
+    if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error("--timeout must be between 0 and 60 seconds")
+    const until = Date.now() + seconds * 1000
+    while (true) {
+      const ide = (await endpoints()).find((item) => item.id === "webstorm")
+      if (!ide) return { ok: false, phase: "missing", service: "frontend", reason: "WebStorm is not running" }
+      const data = await tool(ide, "list_debug_sessions")
+      const sessions = rows(data, "sessions").filter((item) => item.runConfigurationName === "Veritly Frontend" && ["running", "paused"].includes(String(item.state)))
+      if (!sessions.length) return { ok: false, phase: "missing", service: "frontend", reason: "Start the frontend debug session first" }
+      if (sessions.length > 1) return { ok: false, phase: "unknown", service: "frontend", reason: "Multiple frontend sessions are active" }
+      if (sessions[0].state === "paused") return { ok: false, phase: "paused", service: "frontend", session: sessions[0] }
+      const url = `http://127.0.0.1:${port(spec("frontend"))}/`
+      const health = await fetch(url, { signal: AbortSignal.timeout(500) }).then((res) => ({ ok: res.ok, status: res.status }), () => ({ ok: false, status: 0 }))
+      if (health.ok) return { ok: true, phase: "ready", service: "frontend", session: sessions[0], health: { ...health, url } }
+      if (Date.now() >= until) return { ok: false, phase: "waiting", service: "frontend", session: sessions[0], health: { ...health, url } }
+      await Bun.sleep(Math.min(250, until - Date.now()))
+    }
+  }
   async function smoke() {
     const ide = await endpoint()
     await config(ide, "Veritly IDE Breakpoint Test")
@@ -75,7 +94,9 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
       }),
     ])
     const selected = runs?.ok ? rows(runs.value, "configurations").find((item) => item.name === "Veritly Browser") : undefined
-    const matches = typeof selected?.description === "string" && selected.description.includes(new URL(url).href)
+    const saved = await attempt(async () => await Bun.file(record(cfg.project)).json() as unknown)
+    const matches = typeof selected?.description === "string" && selected.description.includes(new URL(url).href) ||
+      selected?.typeId === "ChromiumRemoteDebugType" && saved.ok && object(saved.value) && saved.value.url === new URL(url).href && typeof saved.value.endpoint === "string"
     const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === "Veritly Browser") : undefined
     const state = sessions?.length === 1 ? sessions[0].state : undefined
     const found = web?.ok ? await attempt(() => tab(web.value.endpoint, url)) : undefined
@@ -135,6 +156,11 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (ide.id !== "webstorm") throw new Error("test browser requires WebStorm")
     const ready = await readiness("packages/app")
     if (!ready.ok || !ready.browser) throw new Error(`Browser is not ready: ${JSON.stringify(ready.stages)}`)
+    const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
+      .filter((item) => item.runConfigurationName === "Veritly Browser" && ["running", "paused"].includes(String(item.state)))
+    if (sessions.length !== 1) throw new Error(`Expected one active browser debug session; found ${sessions.length}`)
+    const session = field(sessions[0], ["id", "sessionId"])
+    if (!session) throw new Error("Browser debug session has no ID")
     const list = rows(await tool(ide, "list_breakpoints"), "breakpoints")
     if (list.some((item) => item.enabled === true)) throw new Error("Disable existing breakpoints before test browser")
     const target = path.join(root, "packages/app/src/entry.tsx")
@@ -148,23 +174,23 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     const state = { paused: false }
     try {
       await reload(ready.browser.endpoint, url)
-      const hit = await tool(ide, "wait_for_pause", { timeout: 5 }, 7000)
+      const hit = await tool(ide, "wait_for_pause", { session_id: session, timeout: 5 }, 7000)
       if (!object(hit) || hit.state !== "paused" || !object(hit.breakpointHit) || hit.breakpointHit.breakpointId !== id)
         throw new Error(`App breakpoint did not hit: ${JSON.stringify(pause(hit))}; ${JSON.stringify(await diagnosis(ide))}`)
       state.paused = true
-      const value = await tool(ide, "evaluate_expression", { expression: "root.tagName", frame_index: 0 })
+      const value = await tool(ide, "evaluate_expression", { session_id: session, expression: "root.tagName", frame_index: 0 })
       if (!object(value) || !object(value.result) || value.result.error || value.result.value !== '"DIV"')
         throw new Error("Could not inspect the app root at the breakpoint")
-      await tool(ide, "step_over")
-      const step = await tool(ide, "wait_for_pause", { timeout: 5 }, 7000)
+      await tool(ide, "step_over", { session_id: session })
+      const step = await tool(ide, "wait_for_pause", { session_id: session, timeout: 5 }, 7000)
       if (!object(step) || step.state !== "paused" || step.pausedReason !== "step")
         throw new Error(`Debugger did not pause after stepping: ${JSON.stringify(pause(step))}`)
       return { ok: true, breakpoint: pause(hit), expression: value, step: pause(step) }
     } finally {
       const removed = await attempt(() => tool(ide, "remove_breakpoint", { breakpoint_id: id }))
-      const status = await attempt(() => tool(ide, "get_debug_session_status", { include_variables: false, include_source_context: false, max_stack_frames: 1 }))
+      const status = await attempt(() => tool(ide, "get_debug_session_status", { session_id: session, include_variables: false, include_source_context: false, max_stack_frames: 1 }))
       const paused = status.ok && object(status.value) && status.value.state === "paused" && (state.paused || (object(status.value.breakpointHit) && status.value.breakpointHit.breakpointId === id))
-      const resumed = paused ? await attempt(() => tool(ide, "resume_execution")) : undefined
+      const resumed = paused ? await attempt(() => tool(ide, "resume_execution", { session_id: session })) : undefined
       if (!removed.ok || !status.ok || (resumed && !resumed.ok))
         throw new Error(`Browser test cleanup failed: ${JSON.stringify({ removed, status, resumed })}`)
     }
@@ -225,5 +251,5 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
   }
 
 
-  return { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot }
+  return { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend }
 }

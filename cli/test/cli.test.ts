@@ -5,8 +5,20 @@ import os from "node:os"
 import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
 import { rows } from "../src/core"
+import { wait } from "../src/job"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
+
+test("readiness reports a missing service instead of claiming it is ready", async () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "ide-wait-"))
+  try {
+    expect(await wait("server", project, 0.1)).toMatchObject({ ok: false, phase: "missing", service: "server" })
+    await expect(wait("unknown", project, 0.1)).rejects.toThrow("Unknown service")
+    await expect(wait("server", project, 0)).rejects.toThrow("--timeout")
+  } finally {
+    fs.rmdirSync(project)
+  }
+})
 
 test("rejects malformed debugger lists instead of reporting them as empty", () => {
   expect(() => rows({}, "sessions")).toThrow("invalid sessions list")
@@ -148,18 +160,18 @@ test("maps browser source URLs to this checkout without changing the indexing sc
       expect(xml).toContain(`url="https://preview.test${url}" local-file="${root}"`)
     expect(fs.existsSync(path.join(project, ".idea/source.iml"))).toBe(false)
     const stamp = fs.statSync(file, { bigint: true }).mtimeNs
-    expect(browser(root, component, project, "https://preview.test/assets/frame.html?a=1&b=2", true)).toBe(false)
+    expect(browser(root, component, project, "https://preview.test/assets/frame.html?a=1&b=2")).toBe(false)
     expect(fs.statSync(file, { bigint: true }).mtimeNs).toBe(stamp)
-    expect(() => browser(root, component, project, "https://different.test/", true)).toThrow("reopen")
-    expect(fs.readFileSync(file, "utf8")).toBe(xml)
+    expect(browser(root, component, project, "https://different.test/")).toBe(true)
+    expect(fs.readFileSync(file, "utf8")).toContain('uri="https://different.test/"')
     expect(() => browser(root, component, project, "file:///tmp/frame.html")).toThrow("HTTP(S)")
-    browser(root, component, project, "https://preview.test/", false, "http://127.0.0.1:35139")
+    browser(root, component, project, "https://preview.test/", "http://127.0.0.1:35139")
     const attached = fs.readFileSync(file, "utf8")
     expect(attached).toContain('type="ChromiumRemoteDebugType" host="127.0.0.1" port="35139"')
     expect(attached).toContain(`url="https://preview.test/src" local-file="${component}/src"`)
     expect(attached).not.toContain('uri=')
-    expect(() => browser(root, component, project, "https://preview.test/", true, "http://127.0.0.1:35140")).toThrow("reopen")
-    expect(fs.readFileSync(file, "utf8")).toBe(attached)
+    expect(browser(root, component, project, "https://preview.test/", "http://127.0.0.1:35140")).toBe(true)
+    expect(fs.readFileSync(file, "utf8")).toContain('port="35140"')
     for (const url of ["http://example.test:35139", "http://127.0.0.1:0", "http://127.0.0.1:35139/path", "ws://127.0.0.1:35139"])
       expect(() => address(url)).toThrow("loopback HTTP")
   } finally {

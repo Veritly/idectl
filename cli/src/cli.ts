@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 import path from "node:path"
 import { dispatch } from "./jetbrains"
-import { root, file, namespace, ides, specs, object, print, message, attempt, launcher, input } from "./core"
+import { root, file, namespace, ides, specs, object, print, message, attempt, launcher, input, opened, rows, field } from "./core"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
 import { doctor } from "./doctor"
 import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
+import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 
 const args = process.argv.slice(2)
 
@@ -36,6 +37,7 @@ const timeout = option("--timeout")
 const frame = option("--frame")
 const details = flag("--inspect")
 const full = flag("--full")
+flag("--json")
 const url = option("--url")
 const attach = option("--attach")
 
@@ -49,24 +51,26 @@ function index() {
 
 const debug = debuggerClient({ chosen, override, session, project })
 const { launchedBrowser, endpoints, endpoint, tool, config, launch } = debug
-const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot } = checks(debug, { project, url })
+const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend } = checks(debug, { project, url })
 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
 veritly-ide ready PATH --url URL
+veritly-ide wait frontend|data|server|edge|office|gateway|governor [--timeout SECONDS] [--json]
 veritly-ide ides
 veritly-ide connect
 veritly-ide open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
 veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
-veritly-ide route|unroute data
+veritly-ide route|unroute data|server|edge|office|gateway|governor
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
 veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
+veritly-ide debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
 veritly-ide debug commands [TOOL] | TOOL [JSON|-]
 veritly-ide mcp tools | call TOOL [JSON|-]
 veritly-ide jetbrains tools [FILTER] | schema TOOL | call TOOL [JSON|-] [--timeout SECONDS]
-veritly-ide jetbrains status | configs | output [SESSION] | start CONFIGURATION
+veritly-ide jetbrains status | configs | output [SESSION]
 veritly-ide test breakpoint
 veritly-ide test browser --project PATH --url URL
 
@@ -93,6 +97,22 @@ async function main() {
     const value = await readiness(target)
     print(value)
     return value.ok ? 0 : 1
+  }
+  if (group === "wait") {
+    const name = args.shift()
+    if (!name || args.length) throw new Error("wait requires one service name")
+    if (name === "frontend") {
+      const result = await frontend(timeout ? Number(timeout) : 5)
+      print(result)
+      return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
+    }
+    const ide = (await endpoints()).find((item) => item.id === "rustrover")
+    if (!ide) throw new Error("RustRover is not running; open the service's source first")
+    const target = project ? path.resolve(project) : opened(ide)
+    if (!target) throw new Error("No RustRover project selected; open the service's source first")
+    const result = await wait(name, target, timeout ? Number(timeout) : 5)
+    print(result)
+    return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
   }
   if (group === "ides") {
     const active = await endpoints()
@@ -141,8 +161,9 @@ async function main() {
     return 0
   }
   if (group === "route" || group === "unroute") {
-    if (args.shift() !== "data") throw new Error("route expects data")
-    print(await routing(group === "route"))
+    const name = args.shift()
+    if (!name) throw new Error("route expects a service name")
+    print(await routing(group === "route", name))
     return 0
   }
   if (["start", "stop", "status"].includes(group)) {
@@ -167,11 +188,28 @@ async function main() {
     return 0
   }
   if (group === "jetbrains" || group === "jb") {
-    return dispatch(await endpoint(), args, { project, timeout, full })
+    return dispatch(await endpoint(), args, { project, timeout, full, session, frame: index() })
   }
   if (group === "breakpoint") {
     const ide = await endpoint()
     const action = args.shift()
+    if (ide.id === "rustrover") {
+      if (action === "list") return dispatch(ide, ["call", "xdebug_list_breakpoints"], { project, timeout, full, session })
+      if (action === "set") {
+        const target = args.shift()
+        const line = Number(args.shift())
+        if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
+        const values = await input(args)
+        const item = { isLogMessage: false, isLogStack: false, isCaptureThreadDump: false, temporary: false, suspendPolicy: "ALL", enabled: true, ...values, filePath: path.resolve(root, target), line }
+        return dispatch(ide, ["call", "xdebug_set_breakpoints", JSON.stringify({ breakpoints: [item] })], { project, timeout, full, session })
+      }
+      if (action === "remove") {
+        const id = args.shift()
+        if (!id) throw new Error("breakpoint remove requires an ID")
+        return dispatch(ide, ["call", "xdebug_remove_breakpoints", JSON.stringify({ breakpoints: [{ breakpointId: id, owner: "agent" }] })], { project, timeout, full, session })
+      }
+      throw new Error("breakpoint expects set|list|remove")
+    }
     if (action === "set") {
       const target = args.shift()
       const line = Number(args.shift())
@@ -187,10 +225,42 @@ async function main() {
     return 0
   }
   if (group === "debug") {
-    const ide = await endpoint()
     const action = args.shift()
+    const rust = action && (["jobs", "builds", "recover"].includes(action) ||
+      ["start", "cancel"].includes(action) && managed(args.join(" ").trim()))
+    const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === "rustrover") : await endpoint()
+    if (!ide) throw new Error("RustRover is not running; open the service's source first")
+    if (ide.id === "rustrover") {
+      if (!action) throw new Error("debug requires a command")
+      if (action === "run") throw new Error("Use debug start for Rust so runtime setup is applied")
+      if (["start", "jobs", "cancel", "recover"].includes(action)) {
+        const target = project ? path.resolve(project) : opened(ide)
+        if (!target) throw new Error("No IDE project selected; open a project or pass --project")
+        if (action === "jobs") { print({ jobs: jobs(target) }); return 0 }
+        const name = service(args.join(" ").trim())
+        if (!name) throw new Error(`debug ${action} requires a configuration name`)
+        if (action === "start") { print(enqueue(name, target)); return 0 }
+        if (action === "recover") { print(recover(name, target)); return 0 }
+        print(cancel(name, target))
+        return 0
+      }
+      return dispatch(ide, [action, ...args], { project, timeout, full, session, frame: index() })
+    }
     if (action === "browser") {
       print(await launchedBrowser(ide))
+      return 0
+    }
+    if (action === "cancel") {
+      const name = args.join(" ").trim()
+      const cfg = name === "frontend" ? "Veritly Frontend" : name === "browser" ? "Veritly Browser" : name
+      if (!cfg) throw new Error("debug cancel requires a configuration name")
+      const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
+        .filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)))
+      if (!sessions.length) { print({ ok: true, name: cfg, phase: "stopped" }); return 0 }
+      if (sessions.length !== 1) throw new Error(`Multiple sessions for ${cfg}; select --session ID and use debug stop`)
+      const id = field(sessions[0], ["id", "sessionId"])
+      if (!id) throw new Error("Debug session has no ID")
+      print(await tool(ide, "stop_debug_session", { session_id: id }))
       return 0
     }
     if (action === "commands") {
@@ -277,7 +347,8 @@ async function main() {
       if (!target || !value) throw new Error("debug set requires TARGET EXPRESSION")
       print(await tool(ide, "evaluate_expression", { expression: `${target} = (${value})`, frame_index: index() }))
     } else if (action === "start") {
-      const name = args.join(" ").trim()
+      const value = args.join(" ").trim()
+      const name = value === "frontend" ? "Veritly Frontend" : value === "browser" ? "Veritly Browser" : value
       if (!name) throw new Error("debug start requires a configuration name")
       const cfg = await config(ide, name)
       const result = await launch(ide, name)

@@ -19,9 +19,9 @@ export function scope(cwd: string, target: string, home = os.homedir()) {
   )
   if (!component || component === root) throw new Error(`No component manifest found for ${source}`)
   const ide = rust || fs.existsSync(path.join(component, "Cargo.toml")) ? "rustrover" : "webstorm"
-  const content = path.join(component, "src")
-  if (!fs.existsSync(content))
-    throw new Error(`Choose a component with a src directory, rather than a workspace: ${component}`)
+  if (ide === "rustrover" && !fs.existsSync(path.join(component, "src")))
+    throw new Error(`Choose a Rust component with a src directory, rather than a workspace: ${component}`)
+  const content = fs.existsSync(path.join(component, "src")) ? path.join(component, "src") : component
   const key = new Bun.CryptoHasher("sha256").update(root).digest("hex").slice(0, 12)
   const project = path.join(home, ".local/share/veritly-debugger", key, path.relative(root, component))
   return { root, source, file, component, content, project, ide }
@@ -47,11 +47,15 @@ export function prepare(value: ReturnType<typeof scope>) {
     path.join(dir, "modules.xml"),
     '<project version="4"><component name="ProjectModuleManager"><modules><module fileurl="file://$PROJECT_DIR$/.idea/source.iml" filepath="$PROJECT_DIR$/.idea/source.iml"/></modules></component></project>',
   )
-  if (value.ide === "webstorm")
+  if (value.ide === "webstorm") {
     save(
       path.join(dir, "compiler.xml"),
       '<project version="4"><component name="TypeScriptCompiler"><option name="useService" value="false"/></component></project>',
     )
+    const bun = Bun.which("bun")
+    if (!bun) throw new Error("Bun is missing; install it on this VM")
+    save(path.join(dir, "bun.xml"), `<project version="4"><component name="BunSettings"><option name="bunPath" value="${xml(bun)}" /></component></project>`)
+  }
   if (value.ide === "rustrover") {
     const file = path.join(dir, "workspace.xml")
     const workspace = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : '<project version="4"></project>'
@@ -62,12 +66,17 @@ export function prepare(value: ReturnType<typeof scope>) {
       if (!workspace.includes("</project>")) throw new Error(`Invalid RustRover project settings: ${file}`)
       fs.writeFileSync(file, workspace.replace("</project>", `${settings}</project>`), { mode: 0o600 })
     }
-    if (value.component === path.join(value.root, "packages/veritly-data/runtime")) {
-      const target = path.join(dir, "runConfigurations/Veritly_Data.xml")
-      const template = fs.readFileSync(path.join(value.root, ".run/Veritly_Data.run.xml"), "utf8")
-      fs.mkdirSync(path.dirname(target), { recursive: true })
-      save(target, template.replaceAll("$PROJECT_DIR$", xml(value.root)))
-    }
+  }
+  const configs = path.join(dir, "runConfigurations")
+  fs.mkdirSync(configs, { recursive: true })
+  const shared = path.join(value.root, ".run")
+  if (!fs.existsSync(shared)) return
+  for (const name of fs.readdirSync(shared)) {
+    if (!name.endsWith(".run.xml")) continue
+    const template = fs.readFileSync(path.join(value.root, ".run", name), "utf8")
+    const type = value.ide === "rustrover" ? 'type="CargoCommandRunConfiguration"' : 'type="BunRunConfiguration"'
+    if (!template.includes(type) && !(value.ide === "webstorm" && template.includes('type="JavascriptDebugType"'))) continue
+    save(path.join(configs, name.replace(".run.xml", ".xml")), template.replaceAll("$PROJECT_DIR$", xml(value.root)))
   }
 }
 
@@ -93,7 +102,6 @@ export function browser(
   component: string,
   project: string,
   url: string,
-  active = false,
   attach?: string,
 ) {
   const page = new URL(url)
@@ -113,8 +121,6 @@ export function browser(
     ? `type="ChromiumRemoteDebugType" host="${xml(target.hostname.replace(/^\[|\]$/g, ""))}" port="${target.port}"`
     : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="false"`
   const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="Veritly Browser" ${type}>${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
-  if (active && (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== text))
-    throw new Error("Browser mappings changed; close this IDE project and reopen it to load the new configuration")
   return save(file, text)
 }
 

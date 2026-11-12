@@ -3,7 +3,7 @@ import path from "node:path"
 import { root, file, namespace, specs, object, parse, command, attempt, sockets } from "./core"
 import type { Json, Spec, Endpoint } from "./core"
 
-function vars(target = file) {
+export function vars(target = file) {
   if (!fs.existsSync(target)) throw new Error(`${target} is required`)
   return fs
     .readFileSync(target, "utf8")
@@ -28,10 +28,17 @@ export function spec(name?: string) {
 }
 
 export function port(item: Spec) {
-  if (item.id === "data") return 18080
+  if (routes[item.id]) return local(item.id)
   const value = Number(vars()[item.key])
   if (!Number.isInteger(value) || value < 1 || value > 65_535)
     throw new Error(`${item.key} in ${file} must be 1..65535`)
+  return value
+}
+
+export function local(name: string) {
+  const key = `IDE_${name.toUpperCase()}_PORT`
+  const value = Number(vars()[key])
+  if (!Number.isInteger(value) || value < 1 || value > 65_535) throw new Error(`${key} in ${file} must be 1..65535`)
   return value
 }
 
@@ -138,9 +145,10 @@ async function intercept(item: Spec) {
       namespace,
       "--port",
       `${port(item)}:${item.remote}`,
+      ...(item.service ? ["--service", item.service] : []),
       "--mount",
       "false",
-      ...(item.id === "data" ? ["--node-agent"] : []),
+      ...(item.id !== "frontend" ? ["--node-agent"] : []),
       "--format",
       "json",
       "--progress",
@@ -331,24 +339,48 @@ export async function state(item: Spec) {
   }
 }
 
-export async function routing(enable: boolean) {
+const routes: Record<string, { workload: string; health: string; binary: string; service?: string }> = {
+  data: { workload: "data-runtime", health: "/readyz", binary: "packages/veritly-data/target/debug/veritly-data-runtime" },
+  server: { workload: "opencode-api", health: "/readyz", binary: "packages/veritly-server/target/debug/veritly-server" },
+  edge: { workload: "veritly-edge", service: "veritly-edge", health: "/readyz", binary: "packages/veritly-edge/target/debug/veritly-edge" },
+  office: { workload: "office-server", health: "/readyz", binary: "packages/veritly-office/target/debug/veritly-office-server" },
+  gateway: { workload: "veritly-ai-gateway", health: "/ready", binary: "packages/ai/target/debug/veritly-ai-gateway" },
+  governor: { workload: "bifrost-governor", health: "/ready", binary: "packages/ai/target/debug/veritly-ai-governor" },
+}
+
+export async function localHealth(name: string) {
+  const cfg = routes[name]
+  if (!cfg) throw new Error(`Unknown Rust service ${name}`)
+  const port = local(name)
+  const listener = (await sockets()).find((row) => row.port === port)
+  const target = path.join(root, cfg.binary)
+  if (!listener?.pid || !fs.existsSync(target) || !fs.existsSync(`/proc/${listener.pid}/exe`)) return { ok: false, owner: false }
+  if (fs.realpathSync(`/proc/${listener.pid}/exe`) !== fs.realpathSync(target)) return { ok: false, owner: false }
+  const item = { id: name, workload: cfg.workload, key: "", remote: "http", program: "", health: cfg.health }
+  return { ...(await health(item)), owner: true }
+}
+
+export async function routing(enable: boolean, name: string) {
+  const cfg = routes[name]
+  if (!cfg) throw new Error(`Unknown Rust service ${name}; expected ${Object.keys(routes).join("|")}`)
+  const port = local(name)
   const check = await command(["bun", "script/local-k8s.ts", "doctor"], root, 10_000)
   if (check.includes("local guard: blocked")) throw new Error("Local cluster doctor rejected this Kubernetes target")
   await tunnel()
-  const item = { id: "data", workload: "data-runtime", key: "", remote: "http", program: "", health: "/readyz" }
+  const item = { id: name, workload: cfg.workload, key: "", remote: "http", program: "", health: cfg.health, service: cfg.service }
   const active = (await workloads()).find((row) => row.name === item.workload && intercepted(row))
   if (!enable) {
     if (!active) return { ok: true, detached: false }
     const existing = route(active)
-    if (!existing.intercepts.length || !existing.intercepts.every((row) => row.target_host === "127.0.0.1" && row.target_port === port(item)))
-      throw new Error("Data traffic is intercepted by a different target; existing intercept preserved")
+    if (!existing.intercepts.length || !existing.intercepts.every((row) => row.target_host === "127.0.0.1" && row.target_port === port))
+      throw new Error(`${name} traffic is intercepted by a different target; existing intercept preserved`)
     return { ok: true, ...(await detach(item)) }
   }
-  const listener = (await sockets()).find((row) => row.port === port(item))
-  const target = path.join(root, "packages/veritly-data/target/debug/veritly-data-runtime")
+  const listener = (await sockets()).find((row) => row.port === port)
+  const target = path.join(root, cfg.binary)
   if (!listener?.pid || !fs.existsSync(target) || fs.realpathSync(`/proc/${listener.pid}/exe`) !== fs.realpathSync(target))
-    throw new Error("The local Data binary is not listening on port 18080; start the Veritly Data debugger first")
-  if (!(await health(item)).ok) throw new Error("Local Data is not ready on port 18080")
+    throw new Error(`The local ${name} binary is not listening on port ${port}; start its debugger first`)
+  if (!(await health(item)).ok) throw new Error(`Local ${name} is not ready on port ${port}`)
   const result = await intercept(item)
   return { ok: true, created: result.created, intercept: result.value }
 }

@@ -1,6 +1,40 @@
 import path from "node:path"
+import fs from "node:fs"
 import { root, ides, object, sockets, opened, input, content, print, attempt } from "./core"
 import type { Endpoint, Json } from "./core"
+import { runtime } from "./setup"
+import { tunnel } from "./service"
+
+function builds(ide: Endpoint, configs: Json[]) {
+  if (process.platform !== "linux" || !ide.pid) return []
+  return fs.readdirSync("/proc", { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
+    const pid = Number(entry.name)
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")
+      if (Number(stat[1]) !== ide.pid || Number(stat[2]) !== pid || stat[0] === "Z") return []
+      const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean)
+      if (path.basename(args[0] || "") !== "cargo" || args[1] !== "build") return []
+      const value = (flag: string) => {
+        const index = args.indexOf(flag)
+        if (index < 0) return
+        return args[index + 1]
+      }
+      const pkg = value("--package")
+      const bin = value("--bin")
+      if (!pkg || !bin) return []
+      return configs.flatMap((cfg) => {
+        if (typeof cfg.name !== "string" || typeof cfg.commandLine !== "string") return []
+        const parts = cfg.commandLine.split(/\s+/)
+        if (!parts.includes("--package") || !parts.includes("--bin")) return []
+        if (parts[parts.indexOf("--package") + 1] !== pkg || parts[parts.indexOf("--bin") + 1] !== bin) return []
+        return [{ pid, name: cfg.name }]
+      })
+    } catch (err) {
+      if (object(err) && (err.code === "ENOENT" || err.code === "ESRCH")) return []
+      throw err
+    }
+  })
+}
 
 export async function jetbrains(port: number) {
   const url = `http://127.0.0.1:${port}/stream`
@@ -63,7 +97,7 @@ export async function jetbrains(port: number) {
   }
 }
 
-export async function dispatch(ide: Endpoint, args: string[], opts: { project?: string; timeout?: string; full: boolean }) {
+export async function dispatch(ide: Endpoint, args: string[], opts: { project?: string; timeout?: string; full: boolean; session?: string; frame?: number }) {
   const project = opts.project
   const timeout = opts.timeout
   const full = opts.full
@@ -83,7 +117,22 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       print(full ? found : found.map((item) => item.name))
       return 0
     }
-    const alias: Record<string, string> = { status: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", start: "xdebug_start_debugger_session" }
+    if (ide.id === "rustrover" && (action === "builds" || action === "cancel")) {
+      const target = project ? path.resolve(project) : opened(ide)
+      if (!target) throw new Error("No IDE project selected; open a project or pass --project")
+      const data = content(await client.call("get_run_configurations", { projectPath: target }))
+      if (!object(data) || !Array.isArray(data.configurations)) throw new Error("IDE returned invalid run configurations")
+      const live = builds(ide, data.configurations.filter(object))
+      if (action === "builds") { print({ builds: live }); return 0 }
+      const name = args.join(" ").trim()
+      if (!name) throw new Error("debug cancel requires a configuration name")
+      const found = live.filter((item) => item.name === name)
+      if (found.length !== 1) throw new Error(`Expected one active IDE build for ${name}; found ${found.length}. Check debug status for an active session`)
+      process.kill(-found[0].pid, "SIGTERM")
+      print({ ok: true, phase: "cancelling", build: found[0], message: "Check debug status for any session that appeared during cancellation" })
+      return 0
+    }
+    const alias: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
     const name = alias[action || ""] || args.shift()?.replaceAll("-", "_")
     if (!name) throw new Error("jetbrains expects tools [FILTER], schema TOOL, or call TOOL [JSON|-]")
     const schema = tools.find((item) => item.name === name)
@@ -95,8 +144,17 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     if (action !== "call" && !alias[action || ""]) throw new Error("jetbrains expects tools|schema|call|status|configs|output|start")
     const seconds = timeout ? Number(timeout) : 5
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new Error("--timeout must be between 0 and 3600 seconds")
-    const values = action === "start"
+    const controls: Record<string, string> = { stop: "STOP", pause: "PAUSE", resume: "RESUME", wait: "WAIT_FOR_PAUSE", "step-over": "STEP_OVER", "step-into": "STEP_INTO", "step-out": "STEP_OUT" }
+    const values: Json = action === "start"
       ? { configurationName: args.join(" ").trim(), timeout: seconds * 1000, graceWaitMs: 0 }
+      : action && controls[action]
+        ? { action: controls[action], timeout: action === "resume" ? 0 : seconds * 1000 }
+      : action === "eval"
+        ? { expression: args.join(" ").trim(), frameIndex: opts.frame }
+      : action === "vars"
+        ? { frameIndex: opts.frame, ...(await input(args)) }
+      : action === "stack"
+        ? { limit: 5, ...(await input(args)) }
       : action === "output" && args[0] && args[0] !== "-" && !args[0].startsWith("{")
         ? { sessionId: args.shift(), maxLines: 30 }
         : await input(args)
@@ -104,12 +162,44 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     if (!object(schema.inputSchema)) throw new Error(`${name} has an invalid input schema`)
     const props = schema.inputSchema.properties
     if (props !== undefined && !object(props)) throw new Error(`${name} has invalid input properties`)
+    if (props?.sessionId && opts.session && !values.sessionId) values.sessionId = opts.session
     if (props?.projectPath && !values.projectPath) {
       const target = project ? path.resolve(project) : opened(ide)
       if (!target) throw new Error("No IDE project selected; open a project or pass --project")
       values.projectPath = target
     }
-    const response = content(await client.call(name, values, seconds * 1000 + (action === "start" ? 2000 : 0)))
+    if (action === "start" && typeof values.configurationName === "string") {
+      if (ide.id === "rustrover" && !process.env.VERITLY_IDE_JOB)
+        throw new Error("Use debug start for Rust so preparation and cleanup are supervised")
+      const configs = content(await client.call("get_run_configurations", { projectPath: values.projectPath }))
+      if (!object(configs) || !Array.isArray(configs.configurations)) throw new Error("IDE returned invalid run configurations")
+      const selected = configs.configurations.filter(object).find((item) => item.name === values.configurationName)
+      if (!selected) throw new Error(`Run configuration ${values.configurationName} is not loaded; reopen the project`)
+      const existing = builds(ide, configs.configurations.filter(object)).find((item) => item.name === values.configurationName)
+      if (existing) throw new Error(`${values.configurationName} is already building (PID ${existing.pid}); check debug builds`)
+      const status = content(await client.call("xdebug_get_debugger_status", { projectPath: values.projectPath }))
+      if (!object(status) || !Array.isArray(status.sessions)) throw new Error("IDE returned invalid debugger sessions")
+      if (status.sessions.filter(object).some((item) => item.runConfigurationName === values.configurationName && (item.state === "running" || item.state === "paused")))
+        throw new Error(`${values.configurationName} already has an active debug session; check debug status`)
+      const env = await runtime(values.configurationName, tunnel)
+      if (env) {
+        if (selected.supportsDynamicLaunchOverrides !== true) throw new Error(`${values.configurationName} does not support per-launch environment overrides`)
+        values.envs = env
+      }
+      if (process.env.VERITLY_IDE_JOB) fs.writeFileSync(path.join(process.env.VERITLY_IDE_JOB, "phase"), "starting IDE", { mode: 0o600 })
+    }
+    const reply = await attempt(() => client.call(name, values, seconds * 1000 + (action === "start" ? 2000 : 0)))
+    if (!reply.ok) {
+      if (action === "start" && reply.error.toLowerCase().includes("timed out")) {
+        const data = content(await client.call("get_run_configurations", { projectPath: values.projectPath }))
+        if (!object(data) || !Array.isArray(data.configurations)) throw new Error("IDE returned invalid run configurations")
+        const found = builds(ide, data.configurations.filter(object)).find((item) => item.name === values.configurationName)
+        if (found) { print({ ok: true, phase: "building", build: found, message: "Use debug builds, then debug status; cancel this build with debug cancel" }); return 0 }
+        throw new Error(`Start reply timed out; launch outcome is unknown. Inspect jetbrains status before repeating ${values.configurationName}`)
+      }
+      throw new Error(reply.error)
+    }
+    const response = content(reply.value)
     const result = name === "get_run_configurations" && object(response) && Array.isArray(response.configurations)
       ? { ...response, configurations: response.configurations.map((item) => {
           if (!object(item) || !object(item.environment)) return item

@@ -26,6 +26,7 @@ export type Spec = {
   remote: string
   program: string
   health: string
+  service?: string
 }
 
 export const root = path.resolve(import.meta.dir, "../../..")
@@ -223,7 +224,7 @@ export function identity(port: number, proc?: string) {
 }
 
 export async function probe(port: number, proc?: string, pid?: number): Promise<Endpoint> {
-  const result = await rpc(port, "tools/list", {}, 500)
+  const result = await rpc(port, "tools/list", {}, 3000)
   if (!object(result) || !Array.isArray(result.tools)) throw new Error("Debugger MCP returned an invalid tool list")
   const tools = result.tools.filter(object)
   if (!tools.some((tool) => tool.name === "set_breakpoint")) throw new Error("Debugger MCP does not expose breakpoints")
