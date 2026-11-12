@@ -13,7 +13,8 @@ export function debuggerClient(opts: Options) {
   const project = opts.project
   async function launchedBrowser(ide: Endpoint) {
     if (process.platform !== "linux") throw new Error("IDE browser discovery is supported on Linux VMs")
-    if (ide.id !== "webstorm" || !ide.pid) throw new Error("A verified WebStorm process is required")
+    if (ide.id !== "webstorm") throw new Error("Browser attachment requires --ide webstorm; a managed service's wait result already includes preview.arguments")
+    if (!ide.pid) throw new Error("A verified WebStorm process is required; open packages/app --ide webstorm first")
     const dir = project ? path.resolve(project) : opened(ide)
     const file = dir ? record(dir) : undefined
     const state: unknown = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined
