@@ -5,34 +5,19 @@ import type { Endpoint, Json } from "./core"
 import { runtime } from "./setup"
 import { tunnel } from "./service"
 
-function builds(ide: Endpoint, configs: Json[]) {
-  if (process.platform !== "linux" || !ide.pid) return []
-  return fs.readdirSync("/proc", { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).flatMap((entry) => {
-    const pid = Number(entry.name)
-    try {
-      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")
-      if (Number(stat[1]) !== ide.pid || Number(stat[2]) !== pid || stat[0] === "Z") return []
-      const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean)
-      if (path.basename(args[0] || "") !== "cargo" || args[1] !== "build") return []
-      const value = (flag: string) => {
-        const index = args.indexOf(flag)
-        if (index < 0) return
-        return args[index + 1]
-      }
-      const pkg = value("--package")
-      const bin = value("--bin")
-      if (!pkg || !bin) return []
-      return configs.flatMap((cfg) => {
-        if (typeof cfg.name !== "string" || typeof cfg.commandLine !== "string") return []
-        const parts = cfg.commandLine.split(/\s+/)
-        if (!parts.includes("--package") || !parts.includes("--bin")) return []
-        if (parts[parts.indexOf("--package") + 1] !== pkg || parts[parts.indexOf("--bin") + 1] !== bin) return []
-        return [{ pid, name: cfg.name }]
-      })
-    } catch (err) {
-      if (object(err) && (err.code === "ENOENT" || err.code === "ESRCH")) return []
-      throw err
-    }
+async function runs(client: Awaited<ReturnType<typeof jetbrains>>, project: unknown) {
+  const data = content(await client.call("veritly_run_status", { projectPath: project }))
+  if (!object(data) || !Array.isArray(data.runs) || !data.runs.every(object)) throw new Error("IDE lifecycle plugin returned invalid executions")
+  return data.runs.filter(object)
+}
+
+function builds(rows: Json[]) {
+  return rows.flatMap((row) => {
+    if (typeof row.name !== "string" || typeof row.id !== "string") return []
+    if (row.phase !== "running" && row.phase !== "stopping") return []
+    const match = /^Build `(.+)`$/.exec(row.name)
+    if (!match) return []
+    return [{ id: row.id, name: match[1], cancellable: row.cancellable === true }]
   })
 }
 
@@ -111,6 +96,9 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
   try {
     const tools = await client.tools()
     const action = args.shift()
+    if (ide.id === "rustrover" && ["builds", "cancel", "start"].includes(action || "") &&
+      !["veritly_run_status", "veritly_run_stop", "veritly_cargo_attach"].every((name) => tools.some((item) => item.name === name)))
+      throw new Error("Install the current Veritly JetBrains lifecycle plugin in RustRover and reopen the IDE")
     if (action === "tools") {
       const query = args.join(" ").trim().toLowerCase()
       const found = tools.filter((item) => typeof item.name === "string" && item.name.toLowerCase().includes(query))
@@ -120,18 +108,17 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     if (ide.id === "rustrover" && (action === "builds" || action === "cancel")) {
       const target = project ? path.resolve(project) : opened(ide)
       if (!target) throw new Error("No IDE project selected; open a project or pass --project")
-      const data = content(await client.call("get_run_configurations", { projectPath: target }))
-      if (!object(data) || !Array.isArray(data.configurations)) throw new Error("IDE returned invalid run configurations")
-      const live = builds(ide, data.configurations.filter(object))
+      const live = builds(await runs(client, target))
       if (action === "builds") { print({ builds: live }); return 0 }
       const name = args.join(" ").trim()
       if (!name) throw new Error("debug cancel requires a configuration name")
-      const found = live.filter((item) => item.name === name)
-      if (found.length !== 1) throw new Error(`Expected one active IDE build for ${name}; found ${found.length}. Check debug status for an active session`)
-      process.kill(-found[0].pid, "SIGTERM")
-      print({ ok: true, phase: "cancelling", build: found[0], message: "Check debug status for any session that appeared during cancellation" })
+      const found = live.filter((item) => item.name === name && item.cancellable)
+      if (found.length !== 1) throw new Error(`Expected one cancellable IDE build for ${name}; found ${found.length}`)
+      await client.call("veritly_run_stop", { id: found[0].id, projectPath: target })
+      print({ ok: true, phase: "cancelling", build: found[0] })
       return 0
     }
+
     const alias: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
     const name = alias[action || ""] || args.shift()?.replaceAll("-", "_")
     if (!name) throw new Error("jetbrains expects tools [FILTER], schema TOOL, or call TOOL [JSON|-]")
@@ -175,12 +162,25 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       if (!object(configs) || !Array.isArray(configs.configurations)) throw new Error("IDE returned invalid run configurations")
       const selected = configs.configurations.filter(object).find((item) => item.name === values.configurationName)
       if (!selected) throw new Error(`Run configuration ${values.configurationName} is not loaded; reopen the project`)
-      const existing = builds(ide, configs.configurations.filter(object)).find((item) => item.name === values.configurationName)
-      if (existing) throw new Error(`${values.configurationName} is already building (PID ${existing.pid}); check debug builds`)
+      const existing = ide.id === "rustrover" ? builds(await runs(client, values.projectPath)).find((item) => item.name === values.configurationName) : undefined
+      if (existing) throw new Error(`${values.configurationName} is already building; check debug builds`)
       const status = content(await client.call("xdebug_get_debugger_status", { projectPath: values.projectPath }))
       if (!object(status) || !Array.isArray(status.sessions)) throw new Error("IDE returned invalid debugger sessions")
       if (status.sessions.filter(object).some((item) => item.runConfigurationName === values.configurationName && (item.state === "running" || item.state === "paused")))
         throw new Error(`${values.configurationName} already has an active debug session; check debug status`)
+      if (ide.id === "rustrover") {
+        if (typeof selected.workingDirectory !== "string") throw new Error("Run configuration has no working directory")
+        const manifest = path.join(selected.workingDirectory, "Cargo.toml")
+        if (!fs.existsSync(manifest)) throw new Error(`Cargo manifest not found in ${selected.workingDirectory}`)
+        if (process.env.VERITLY_IDE_JOB) fs.writeFileSync(path.join(process.env.VERITLY_IDE_JOB, "phase"), "loading Cargo project", { mode: 0o600 })
+        while (true) {
+          const cargo = content(await client.call("veritly_cargo_attach", { manifest, projectPath: values.projectPath }))
+          if (!object(cargo) || typeof cargo.phase !== "string") throw new Error("IDE returned invalid Cargo project state")
+          if (cargo.phase === "ready") break
+          if (cargo.phase !== "loading" && cargo.phase !== "attaching") throw new Error(`Cargo project is ${cargo.phase}`)
+          await Bun.sleep(500)
+        }
+      }
       const env = await runtime(values.configurationName, tunnel)
       if (env) {
         if (selected.supportsDynamicLaunchOverrides !== true) throw new Error(`${values.configurationName} does not support per-launch environment overrides`)
@@ -191,15 +191,25 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     const reply = await attempt(() => client.call(name, values, seconds * 1000 + (action === "start" ? 2000 : 0)))
     if (!reply.ok) {
       if (action === "start" && reply.error.toLowerCase().includes("timed out")) {
-        const data = content(await client.call("get_run_configurations", { projectPath: values.projectPath }))
-        if (!object(data) || !Array.isArray(data.configurations)) throw new Error("IDE returned invalid run configurations")
-        const found = builds(ide, data.configurations.filter(object)).find((item) => item.name === values.configurationName)
-        if (found) { print({ ok: true, phase: "building", build: found, message: "Use debug builds, then debug status; cancel this build with debug cancel" }); return 0 }
+        const live = await runs(client, values.projectPath)
+        const found = builds(live).find((item) => item.name === values.configurationName)
+        if (found) { print({ ok: true, phase: "building", build: found }); return 0 }
+        if (live.some((item) => item.name === values.configurationName && item.phase === "starting")) {
+          print({ ok: true, phase: "starting IDE" }); return 0
+        }
         throw new Error(`Start reply timed out; launch outcome is unknown. Inspect jetbrains status before repeating ${values.configurationName}`)
       }
       throw new Error(reply.error)
     }
     const response = content(reply.value)
+    if (ide.id === "rustrover" && action === "start" && object(response) && response.state === "failed_to_start") {
+      const live = await runs(client, values.projectPath)
+      const build = builds(live).find((item) => item.name === values.configurationName)
+      if (build || live.some((item) => item.name === values.configurationName && item.phase === "starting")) {
+        print({ ok: true, phase: build ? "building" : "starting IDE", build })
+        return 0
+      }
+    }
     const result = name === "get_run_configurations" && object(response) && Array.isArray(response.configurations)
       ? { ...response, configurations: response.configurations.map((item) => {
           if (!object(item) || !object(item.environment)) return item

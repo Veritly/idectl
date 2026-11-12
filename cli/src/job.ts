@@ -94,7 +94,7 @@ export function recover(name: string, project: string) {
   const state = read(folder)
   if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) === state.token)
     throw new Error("Launch supervisor is already running")
-  if (state.phase !== "unknown") throw new Error("Only an unknown launch can be recovered")
+  if (["stopped", "failed"].includes(String(state.phase))) throw new Error("Only an unfinished launch can be recovered")
   const fd = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
   const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "recover", folder], { cwd: root, stdin: "ignore", stdout: fd, stderr: fd })
   fs.closeSync(fd)
@@ -159,6 +159,9 @@ async function worker(folder: string, recover: boolean) {
     update("failed", { error: "This configuration already has an active IDE session" })
     return
   }
+  const initialRuns = await call(["jetbrains", "call", "veritly_run_status", "{}", ...args])
+  if (!Array.isArray(initialRuns.runs) || !initialRuns.runs.every(object)) throw new Error("IDE returned invalid execution list")
+  const priorRuns = recover ? [] : initialRuns.runs.filter(object).map((item) => item.id)
   const active = await call(["jetbrains", "builds", ...args])
   if (!Array.isArray(active.builds) || !active.builds.every(object)) throw new Error("IDE returned invalid build list")
   if (!recover && active.builds.filter(object).some((item) => item.name === name)) {
@@ -168,7 +171,7 @@ async function worker(folder: string, recover: boolean) {
   if (recover) {
     const build = active.builds.filter(object).find((item) => item.name === name)
     const live = before.sessions.filter(object).filter((item) => (item.runConfigurationName === name || item.name === name) && (item.state === "running" || item.state === "paused"))
-    if (live.length > 1 || (!live.length && (!build || !object(initial.build) || build.pid !== initial.build.pid)))
+    if (live.length > 1 || (!live.length && (!build || !object(initial.build) || build.id !== initial.build.id)))
       throw new Error("Cannot verify the original build or session; inspect the IDE before cleanup")
     update("recovering", { error: undefined })
   }
@@ -231,8 +234,7 @@ async function worker(folder: string, recover: boolean) {
     if (typeof reply.sessionId === "string") state.session = reply.sessionId
   }
   state.stage = "monitoring"
-  const started = Date.now()
-  const cancelled = { build: 0 }
+  const cancelled = { build: "" }
   while (true) {
     try {
       const status = await call(["jetbrains", "status", ...args])
@@ -243,9 +245,14 @@ async function worker(folder: string, recover: boolean) {
       )
       const session = sessions.find((item) => item.state === "running" || item.state === "paused")
       const ended = sessions.find((item) => item.state === "stopped" || item.state === "failed_to_start")
+      const execution = await call(["jetbrains", "call", "veritly_run_status", "{}", ...args])
+      if (!Array.isArray(execution.runs) || !execution.runs.every(object)) throw new Error("IDE returned invalid execution list")
+      const current = execution.runs.filter(object).filter((item) => !priorRuns.includes(item.id))
+      const parent = current.find((item) => item.name === name && (item.phase === "starting" || item.phase === "running"))
+      const failed = current.find((item) => item.name === name && item.phase === "failed")
       const builds = await call(["jetbrains", "builds", ...args])
       if (!Array.isArray(builds.builds) || !builds.builds.every(object)) throw new Error("IDE returned invalid build list")
-      const build = builds.builds.filter(object).find((item) => item.name === name)
+      const build = builds.builds.filter(object).find((item) => item.name === name && !priorRuns.includes(item.id))
       if (session && typeof session.sessionId === "string") {
         state.session = session.sessionId
         if (stopped()) {
@@ -260,15 +267,15 @@ async function worker(folder: string, recover: boolean) {
       } else if (build) {
         if (stopped() && !cancelled.build) {
           await call(["jetbrains", "cancel", name, ...args])
-          cancelled.build = Date.now()
+          cancelled.build = String(build.id)
         }
         update(stopped() ? "cancelling" : "building", { build })
-      } else if (typeof state.session === "string" || ended || (cancelled.build && Date.now() - cancelled.build >= 3000)) {
+      } else if (typeof state.session === "string" || ended || (failed && !parent)) {
         clean()
-        update(ended && ended.exitCode && ended.exitCode !== 0 && !stopped() ? "failed" : "stopped", { health: undefined, build: undefined, exitCode: ended?.exitCode })
+        update(!stopped() && (failed || (ended && ended.exitCode && ended.exitCode !== 0)) ? "failed" : "stopped", { health: undefined, build: undefined, exitCode: ended?.exitCode, error: failed && !stopped() ? "IDE build or debugger launch failed" : undefined })
         return
       } else {
-        update(stopped() ? "cancelling" : Date.now() - started > 10000 ? "unknown" : "starting IDE", { build: undefined })
+        update(stopped() ? "cancelling" : "starting IDE", { build: undefined })
       }
     } catch (err) {
       update("checking IDE", { error: err instanceof Error ? err.message : String(err) })

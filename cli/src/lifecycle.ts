@@ -2,7 +2,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { scope, prepare, browser, address } from "./project"
-import { root, ides, object, command, attempt, launcher, sockets, owner, record, stamp, rows, field } from "./core"
+import { root, ides, object, command, attempt, launcher, sockets, owner, record, stamp, rows, field, opened, content } from "./core"
+import { jetbrains } from "./jetbrains"
 import type { Json, Endpoint } from "./core"
 import { settings } from "./setup"
 
@@ -73,6 +74,24 @@ export function lifecycle(ctx: Context) {
       if (!status.verified) throw new Error(`Port ${ide.port}: ${status.reason}; no IDE launched`)
     }
     if (!project) prepare(cfg as ReturnType<typeof scope>)
+    if (listener && !project) {
+      const live = (await endpoints()).find((item) => item.id === ide.id)
+      if (!live) throw new Error(`${ide.name} is running but its debugger connection is unavailable`)
+      const bridge = (await sockets()).find((item) => item.port === ide.port + 300)
+      if (!bridge || bridge.pid !== live.pid) throw new Error(`${ide.name} lifecycle MCP listener is unavailable or has a different owner`)
+      const client = await jetbrains(ide.port + 300)
+      try {
+        const tools = await client.tools()
+        if (!["veritly_open_windows", "veritly_trust_project"].every((name) => tools.some((item) => item.name === name)))
+          throw new Error(`Install the current Veritly JetBrains lifecycle plugin in ${ide.name} and reopen the IDE`)
+        const target = opened(live) || cfg.project
+        await client.call("veritly_open_windows", { projectPath: target })
+        const result = content(await client.call("veritly_trust_project", { directory: cfg.project, projectPath: target }))
+        if (!object(result) || result.trusted !== true) throw new Error("IDE did not trust the generated debugger project")
+      } finally {
+        await client.close()
+      }
+    }
     if (url && ide.id !== "webstorm") throw new Error("--url requires WebStorm")
     if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, attach)
     if (!listener) await settings(bin, cfg.project, ide)
