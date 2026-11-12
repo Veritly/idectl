@@ -1213,6 +1213,32 @@ async function smoke() {
   }
 }
 
+async function readiness(target: string) {
+  const cfg = scope(root, target)
+  if (cfg.ide !== "webstorm") throw new Error("ready currently checks a WebStorm browser project")
+  if (!url) throw new Error("ready requires --url with the application URL")
+  const ide = (await endpoints()).find((item) => item.id === "webstorm")
+  if (!ide) throw new Error("WebStorm debugger is not active; run doctor and open the component")
+  const [runs, sessions, browser, page] = await Promise.all([
+    tool(ide, "list_run_configurations", { project_path: cfg.project }),
+    tool(ide, "list_debug_sessions", { project_path: cfg.project }),
+    launchedBrowser(ide),
+    fetch(url, { signal: AbortSignal.timeout(3000) }),
+  ])
+  const tabs: unknown = await (await fetch(`${browser.endpoint}/json/list`, { signal: AbortSignal.timeout(3000) })).json()
+  const origin = new URL(url).origin
+  const checks = {
+    project: rows(runs, "configurations").some((item) => item.name === "Veritly Browser"),
+    session: rows(sessions, "sessions").some(
+      (item) => item.runConfigurationName === "Veritly Browser" && ["running", "paused"].includes(String(item.state)),
+    ),
+    browser: Array.isArray(tabs) && tabs.some((item) => object(item) && typeof item.url === "string" && item.url.startsWith(`${origin}/`)),
+    page: page.ok,
+    breakpoint: ide.tools.some((item) => item.name === "set_breakpoint"),
+  }
+  return { ok: Object.values(checks).every(Boolean), project: cfg.project, url, checks, status: page.status, browser }
+}
+
 async function values(ide: Endpoint, names: string[], frame = 0) {
   if (!names.length)
     throw new Error("Choose expressions with debug vars NAME...; use debug get-variables JSON for the full scope")
@@ -1267,6 +1293,7 @@ async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: 
 }
 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
+veritly-ide ready PATH --url URL
 veritly-ide ides
 veritly-ide connect
 veritly-ide open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
@@ -1293,6 +1320,13 @@ async function main() {
   }
   if (group === "doctor") {
     const value = await doctor()
+    print(value)
+    return value.ok ? 0 : 1
+  }
+  if (group === "ready") {
+    const target = args.shift()
+    if (!target) throw new Error("ready requires a component path")
+    const value = await readiness(target)
     print(value)
     return value.ok ? 0 : 1
   }
