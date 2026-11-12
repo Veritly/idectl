@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
@@ -31,7 +31,7 @@ export function debuggerClient(opts: Options) {
       const data: unknown = await response.json()
       if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
         throw new Error("The browser listener is not a Chromium debugging endpoint")
-      return { ok: true, pid: socket.pid, endpoint: target.origin }
+      return { ok: true, pid: socket.pid, endpoint: target.origin, ...preview(target.origin) }
     }
     for (let count = 0; count < 30; count++) {
       const rows = browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), ide.pid)
@@ -51,7 +51,7 @@ export function debuggerClient(opts: Options) {
         const data: unknown = await result.json()
         if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
           throw new Error("The browser listener is not a Chromium debugging endpoint")
-        return { ok: true, ...found[0] }
+        return { ok: true, ...found[0], ...preview(found[0].endpoint) }
       }
       await Bun.sleep(150)
     }

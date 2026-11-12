@@ -67,6 +67,17 @@ export function print(value: unknown) {
   process.stdout.write(`${JSON.stringify(value)}\n`)
 }
 
+export function preview(endpoint: string) {
+  return {
+    preview: {
+      before: "preview_status",
+      tool: "preview_open",
+      arguments: { debugEndpoint: endpoint, reuseExistingTab: false },
+    },
+    hint: "Use T3 preview_status then preview_open with these arguments; native CUA browser discovery is separate.",
+  }
+}
+
 export function message(value: unknown) {
   if (value instanceof Error) return value.message
   return String(value)

@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { root, object, stamp, rows, field } from "./core"
+import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
 import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service } from "./job"
@@ -123,7 +123,10 @@ export async function wait(name: string, seconds: number, goal = "ready") {
     if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created > 10000)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor did not start; use debug down to clean up" }
     if (state.phase === "paused" && goal === "ready") return { ok: false, ...state, hint: "Inspect the paused session or resume it to continue startup." }
-    if (state.phase === "ready" && goal === "ready") return { ok: true, ...state, hint: "Attach the debug browser, set breakpoints, and trigger the action to inspect." }
+    if (state.phase === "ready" && goal === "ready") {
+      if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Ready session has no browser endpoint")
+      return { ok: true, ...state, ...preview(state.browser.endpoint) }
+    }
     if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase, hint: goal === "stopped" ? `Run wait session ${name} --until stopped again; cleanup is still progressing.` : `Run wait session ${name} again; the existing launch is still progressing.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
   }
