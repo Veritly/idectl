@@ -4,5 +4,6 @@
   </extensions>
   <extensions defaultExtensionNs="cidr.debugger">
     <stepFilters.provider implementation="com.veritly.ide.Stepping"/>
+    <debugProcessConfigurator implementation="com.veritly.ide.Stepping"/>
   </extensions>
 </idea-plugin>
