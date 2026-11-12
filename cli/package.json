@@ -8,7 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit -p .",
-    "test": "bun test ./test/cli.test.ts",
+    "test": "bun test ./test",
     "test:breakpoint": "bun src/cli.ts test breakpoint"
   },
   "devDependencies": {
