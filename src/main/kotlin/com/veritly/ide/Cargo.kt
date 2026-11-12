@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.currentCoroutineContext
 import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.CargoProject
+import org.rust.debugger.settings.RsDebuggerSettings
 
 @Service(Service.Level.PROJECT)
 class CargoState {
@@ -25,6 +26,9 @@ class Cargo : McpToolset {
   @McpTool
   @McpDescription("Attach an absolute Cargo.toml path to this IDE project. Returns whether its Cargo model is ready; retry while loading.")
   suspend fun veritly_cargo_attach(@McpDescription("Absolute path to Cargo.toml") manifest: String): String {
+    val settings = RsDebuggerSettings.Helper.getInstance()
+    settings.skipStdlibInStepping = true
+    settings.skipExternalCratesInStepping = true
     val path = Path.of(manifest).toAbsolutePath().normalize()
     require(path.fileName.toString() == "Cargo.toml" && Files.isRegularFile(path)) { "A Cargo.toml file is required" }
     val cargo = currentCoroutineContext().project.service<CargoProjectsService>()
