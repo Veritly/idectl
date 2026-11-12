@@ -100,11 +100,12 @@ At a frontend pause, select the browser session and inspect variables before res
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 JetBrains tools are listed by name; use schema for details and --full for unbounded output.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
+Waits return immediately when their condition is met, with a default maximum of 60s; --timeout sets a shorter maximum. Steps wait for the next pause.
 All result data is JSON on stdout. Errors are JSON on stderr.`
 
 async function main() {
   const group = args.shift()
-  if (!group || group === "help" || group === "--help" || group === "-h") {
+  if (!group || group === "help" || group === "--help" || group === "-h" || args.includes("--help") || args.includes("-h")) {
     process.stdout.write(`${usage}\n`)
     return 0
   }
@@ -130,14 +131,14 @@ async function main() {
     if (name === "request") {
       const id = args.shift()
       if (!id || args.length) throw new Error("wait request requires one request ID")
-      const result = await requestWait(id, timeout ? Number(timeout) : 5)
+      const result = await requestWait(id, timeout ? Number(timeout) : 60)
       print(result)
       return result.ok ? 0 : "phase" in result && result.phase === "waiting" ? 2 : 1
     }
     if (name === "session") {
       const service = args.shift()
       if (!service || args.length) throw new Error("wait session requires one service name")
-      const result = await sessionWait(service, timeout ? Number(timeout) : 5, until)
+      const result = await sessionWait(service, timeout ? Number(timeout) : 60, until)
       print(result)
       return result.ok ? 0 : ["waiting", "stopping", "paused"].includes(String(result.phase)) ? 2 : 1
     }
@@ -147,19 +148,19 @@ async function main() {
       if (!ide) throw new Error(`Unknown IDE ${chosen}`)
       const bin = launcher(ide)
       if (!bin) throw new Error(`${ide.name} is not installed`)
-      const result = await waitPlugin(ide, bin, timeout ? Number(timeout) : 5)
+      const result = await waitPlugin(ide, bin, timeout ? Number(timeout) : 60)
       print(result)
       return result.ok ? 0 : result.phase === "plugin_failed" ? 1 : 2
     }
     if (name === "frontend") {
-      const result = await frontend(timeout ? Number(timeout) : 5)
+      const result = await frontend(timeout ? Number(timeout) : 60)
       print(result)
       return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
     }
     if (!chosen && !project && !override && managed(name)) {
       const current = sessionContext(name).state
       if (current && !["stopped", "failed"].includes(String(current.phase))) {
-        const result = await sessionWait(name, timeout ? Number(timeout) : 5)
+        const result = await sessionWait(name, timeout ? Number(timeout) : 60)
         print(result)
         return result.ok ? 0 : ["waiting", "stopping", "paused"].includes(String(result.phase)) ? 2 : 1
       }
@@ -168,7 +169,7 @@ async function main() {
     if (!ide) throw new Error("RustRover is not running; open the service's source first")
     const target = project ? path.resolve(project) : opened(ide)
     if (!target) throw new Error("No RustRover project selected; open the service's source first")
-    const result = await wait(name, target, timeout ? Number(timeout) : 5)
+    const result = await wait(name, target, timeout ? Number(timeout) : 60)
     print(result)
     return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
   }
@@ -342,7 +343,20 @@ async function main() {
       "step-out": "step_out",
       stop: "stop_debug_session",
     }
-    if (action && map[action])
+    if (action && ["step-over", "step-into", "step-out"].includes(action)) {
+      const seconds = timeout ? Number(timeout) : 60
+      if (!Number.isFinite(seconds) || seconds < 1 || seconds > 60) throw new Error("Step timeout must be 1..60 seconds")
+      const result = await tool(ide, map[action], await input(args), 30_000)
+      const waited = await tool(ide, "wait_for_pause", { timeout: seconds }, seconds * 1000 + 2000)
+      print(object(waited) ? {
+        ...pause(waited),
+        action,
+        result,
+        hint: waited.state === "paused"
+          ? "Inspect this frame, step again, or resume; the application remains paused."
+          : "The step is still running; check debug status before issuing another step.",
+      } : waited)
+    } else if (action && map[action])
       print(
         await tool(
           ide,
@@ -357,7 +371,7 @@ async function main() {
         ),
       )
     else if (action === "wait") {
-      const seconds = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : timeout ? Number(timeout) : 5
+      const seconds = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : timeout ? Number(timeout) : 60
       if (!Number.isFinite(seconds) || seconds < 1) throw new Error("debug wait timeout must be positive")
       const waited = await tool(ide, "wait_for_pause", { timeout: seconds }, seconds * 1000 + 2000)
       if (!details && args.length) throw new Error("debug wait variable names require --inspect")
@@ -376,13 +390,14 @@ async function main() {
       print(await snapshot(ide, selected, args))
     } else if (action === "vars") {
       const raw = args.join(" ").trim()
-      print(
-        !raw
-          ? await tool(ide, "get_variables", { frame_index: index() })
-          : raw.startsWith("{") || raw === "-"
+      const result = !raw
+        ? await tool(ide, "get_variables", { frame_index: index() })
+        : raw.startsWith("{") || raw === "-"
           ? await tool(ide, "get_variables", await input(args))
-          : await values(ide, args, index()),
-      )
+          : await values(ide, args, index())
+      print(object(result) && Array.isArray(result.variables) && result.variables.length === 0
+        ? { ...result, hint: "This frame exposes no locals; inspect another stack frame or evaluate a specific expression." }
+        : result)
     } else if (action === "stack") print(await tool(ide, "get_stack_trace", { max_frames: 5, ...(await input(args)) }))
     else if (action === "source")
       print(await tool(ide, "get_source_context", { lines_before: 3, lines_after: 3, ...(await input(args)) }))
@@ -436,7 +451,7 @@ async function main() {
 main().then(
   (code) => process.exit(code),
   (err) => {
-    process.stderr.write(`${JSON.stringify({ ok: false, error: message(err) })}\n`)
+    process.stderr.write(`${JSON.stringify({ ok: false, error: message(err), hint: "Use veritly-ide --help for syntax, or debug commands TOOL with the same IDE/service selector for tool arguments." })}\n`)
     process.exit(1)
   },
 )

@@ -6,13 +6,15 @@ import { ides, launcher, object, stamp } from "./core"
 import type { Ide } from "./core"
 import debuggerFiles from "./debugger-plugin.json"
 
-const revision = "039de623483609279474abb975ff83e12dae654a"
+const revision = "10f355e266fb5f21833c99cf064950fdf88a0b1d"
 // Fingerprint of this revision built with RustRover 263.7307.214.
-const known = "516bc3abaf1ffb8f7347ed5d199262eca728cf4f3e937013f7d455b53750e889"
+const known = "c3926119a87c93bad2d3c10e3ceadfe32eff012ab154281e76495d3b80df7495"
 const remote = "https://github.com/Veritly/veritly-jetbrains-plugin.git"
 const base = path.join(os.homedir(), ".cache/veritly-ide/plugin")
 const debuggerHash = "cd277059784084db72cbdc7f7072f182df11a37a89e54f29ae5e16f39c89ca84"
 const debuggerUrl = "https://plugins.jetbrains.com/files/29233/1213010/jetbrains-debugger-mcp-plugin-5.4.0.zip"
+const patched = "fb3f688b35f754d26992185f0c278867a8ac2fde9dab1fca67afa6f49b91e905"
+const debuggerJar = "lib/jetbrains-debugger-mcp-plugin-5.4.0.jar"
 
 function digest(file: string) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex")
@@ -34,10 +36,10 @@ function folder(name: string) {
   throw new Error("Automatic JetBrains plugin installation currently supports Linux")
 }
 
-function validDebugger(target: string) {
+function validDebugger(target: string, patch = true) {
   return Object.entries(debuggerFiles).every(([file, hash]) => {
     const full = path.join(target, file)
-    return fs.existsSync(full) && fs.statSync(full).isFile() && digest(full) === hash
+    return fs.existsSync(full) && fs.statSync(full).isFile() && digest(full) === (patch && file === debuggerJar ? patched : hash)
   })
 }
 
@@ -142,7 +144,7 @@ async function download(dir: string) {
   }
 }
 
-export function installDebugger(target: string, dir: string, active: boolean, name: string) {
+export function installDebugger(target: string, dir: string, active: boolean, name: string, patch?: string) {
   const current = state(dir)
   if (current.phase === "failed") return { ok: false, phase: "plugin_failed", error: current.error }
   if (current.phase !== "ready") return { ok: false, phase: "plugin_installing", stage: current.phase }
@@ -155,7 +157,10 @@ export function installDebugger(target: string, dir: string, active: boolean, na
   const out = Bun.spawnSync(["unzip", "-q", archive, "-d", stage], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   if (out.exitCode !== 0) throw new Error("Could not extract the verified debugger plugin")
   const plugin = path.join(stage, "jetbrains-debugger-mcp-plugin")
-  if (!validDebugger(plugin)) throw new Error("Extracted debugger plugin files do not match the verified release")
+  if (!validDebugger(plugin, false)) throw new Error("Extracted debugger plugin files do not match the verified release")
+  if (!patch || !fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger scope patch is missing or invalid")
+  fs.copyFileSync(patch, path.join(plugin, debuggerJar))
+  if (!validDebugger(plugin)) throw new Error("Patched debugger plugin files do not match the verified build")
   const backup = path.join(base, `debugger-backup-${Date.now()}-${process.pid}`)
   const previous = fs.existsSync(target)
   if (previous) fs.renameSync(target, backup)
@@ -203,7 +208,21 @@ async function worker(dir: string, sdk: string, build: string) {
     update("building")
     const java = path.join(sdk, "jbr")
     if (!fs.existsSync(path.join(java, "bin/java"))) throw new Error("The RustRover runtime is missing")
-    await run(["./gradlew", "buildPlugin", `-PidePath=${sdk}`, "--no-daemon", "--console=plain"], source, log, { ...globalThis.process.env, JAVA_HOME: java })
+    const downloaded = path.join(base, "debugger-5.4.0")
+    fs.mkdirSync(downloaded, { recursive: true, mode: 0o700 })
+    const zip = path.join(downloaded, "debugger.zip")
+    if (!fs.existsSync(zip) || digest(zip) !== debuggerHash) await download(downloaded)
+    if (!fs.existsSync(zip) || digest(zip) !== debuggerHash) throw new Error("Verified debugger plugin download is unavailable")
+    const original = path.join(dir, "debugger-original.jar")
+    const extracted = Bun.spawn(["unzip", "-p", zip, `jetbrains-debugger-mcp-plugin/${debuggerJar}`], { stdout: "pipe", stderr: log, stdin: "ignore" })
+    const dependency = await new Response(extracted.stdout).arrayBuffer()
+    if (await extracted.exited !== 0) throw new Error("Could not extract the debugger build dependency")
+    fs.writeFileSync(original, Buffer.from(dependency), { mode: 0o600 })
+    if (digest(original) !== debuggerFiles[debuggerJar]) throw new Error("Debugger build dependency checksum is invalid")
+    await run(["./gradlew", "buildPlugin", "debuggerPatch", `-PidePath=${sdk}`, `-PdebuggerPath=${original}`, "--no-daemon", "--console=plain"], source, log, { ...globalThis.process.env, JAVA_HOME: java })
+    const patch = path.join(source, "build/distributions/debugger-patched.jar")
+    if (!fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger scope patch checksum is invalid")
+    fs.copyFileSync(patch, path.join(dir, "debugger-patched.jar"))
     const archive = path.join(source, "build/distributions/veritly-ide-lifecycle.zip")
     const jar = path.join(dir, "plugin.jar")
     const out = Bun.spawn(["unzip", "-p", archive, "veritly-ide-lifecycle/lib/veritly-ide-lifecycle.jar"], { stdout: "pipe", stderr: log, stdin: "ignore" })
@@ -244,14 +263,6 @@ export function ensure(ide: Ide, bin: string, active: boolean) {
   if (status.phase === "unsupported") throw new Error(status.error)
   const target = folder(name)
   const debuggerTarget = path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin")
-  if (!validDebugger(debuggerTarget)) {
-    const dir = path.join(base, "debugger-5.4.0")
-    enqueue(dir, ["download", dir])
-    const result = installDebugger(debuggerTarget, dir, live, ide.name)
-    if (!result.ok) return { ...result, running: live }
-    const refreshed = inspect(ide, bin)
-    if (refreshed.ok) return { ...refreshed, running: live }
-  }
   const rust = ides.find((item) => item.id === "rustrover")
   if (!rust) throw new Error("RustRover is required to build the JetBrains lifecycle plugin")
   const rustbin = launcher(rust)
@@ -260,6 +271,13 @@ export function ensure(ide: Ide, bin: string, active: boolean) {
   if (!sdk.build.startsWith("263.")) throw new Error(`RustRover ${sdk.build} is not supported by the pinned lifecycle plugin`)
   const dir = path.join(base, `${revision}-${sdk.build}`)
   enqueue(dir, ["worker", dir, sdk.dir, sdk.build])
+  const current = state(dir)
+  if (current.phase === "failed") return { ok: false, phase: "plugin_failed", error: current.error, running: live }
+  if (current.phase !== "ready") return { ok: false, phase: "plugin_installing", stage: current.phase, running: live }
+  if (!validDebugger(debuggerTarget)) {
+    const result = installDebugger(debuggerTarget, path.join(base, "debugger-5.4.0"), live, ide.name, path.join(dir, "debugger-patched.jar"))
+    if (!result.ok) return { ...result, running: live }
+  }
   return { ...install(target, dir, live, ide.name, product(bin).build), running: live }
 }
 

@@ -43,6 +43,13 @@ test("prints shell-friendly help", async () => {
   expect(await proc.exited).toBe(0)
 })
 
+test("nested debugger help works without selecting or contacting an IDE", async () => {
+  const proc = Bun.spawn(["bun", cli, "debug", "vars", "--help", "--port", "1"], { stdout: "pipe", stderr: "pipe" })
+  expect(await new Response(proc.stdout).text()).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
+  expect(await new Response(proc.stderr).text()).toBe("")
+  expect(await proc.exited).toBe(0)
+})
+
 test("documents the inspection commands and one shared env", async () => {
   const help = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
   expect(await new Response(help.stdout).text()).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
