@@ -4,8 +4,15 @@ import fs from "node:fs"
 import os from "node:os"
 import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
+import { rows } from "../src/core"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
+
+test("rejects malformed debugger lists instead of reporting them as empty", () => {
+  expect(() => rows({}, "sessions")).toThrow("invalid sessions list")
+  expect(() => rows({ sessions: [{}, "invalid"] }, "sessions")).toThrow("invalid entry in sessions")
+  expect(rows({ sessions: [] }, "sessions")).toEqual([])
+})
 
 test("lists the local service presets as JSON", async () => {
   const proc = Bun.spawn(["bun", cli, "services"], { stdout: "pipe", stderr: "pipe" })
@@ -101,6 +108,26 @@ test("selects each runtime and points the small project at real source without c
     expect(() => scope(root, dir, dir)).toThrow("repository root")
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("prepares the shared Data configuration and Rust toolchain without copying credentials", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ide-data-")))
+  try {
+    const component = path.join(root, "packages/veritly-data/runtime")
+    fs.mkdirSync(path.join(component, "src"), { recursive: true })
+    fs.mkdirSync(path.join(root, ".run"))
+    fs.writeFileSync(path.join(component, "Cargo.toml"), "")
+    fs.copyFileSync(path.resolve(import.meta.dir, "../../../.run/Veritly_Data.run.xml"), path.join(root, ".run/Veritly_Data.run.xml"))
+    const value = scope(root, component, root)
+    prepare(value)
+    const cfg = fs.readFileSync(path.join(value.project, ".idea/runConfigurations/Veritly_Data.xml"), "utf8")
+    expect(cfg).toContain(`file://${root}/packages/veritly-data`)
+    expect(cfg).toContain("veritly-data-runtime")
+    expect(cfg).not.toContain("DATABASE_URL")
+    expect(fs.readFileSync(path.join(value.project, ".idea/workspace.xml"), "utf8")).toContain("toolchainHomeDirectory")
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })
 

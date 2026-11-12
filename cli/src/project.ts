@@ -24,7 +24,7 @@ export function scope(cwd: string, target: string, home = os.homedir()) {
     throw new Error(`Choose a component with a src directory, rather than a workspace: ${component}`)
   const key = new Bun.CryptoHasher("sha256").update(root).digest("hex").slice(0, 12)
   const project = path.join(home, ".local/share/veritly-debugger", key, path.relative(root, component))
-  return { source, file, component, content, project, ide }
+  return { root, source, file, component, content, project, ide }
 }
 
 function ancestors(dir: string, root: string): string[] {
@@ -52,6 +52,23 @@ export function prepare(value: ReturnType<typeof scope>) {
       path.join(dir, "compiler.xml"),
       '<project version="4"><component name="TypeScriptCompiler"><option name="useService" value="false"/></component></project>',
     )
+  if (value.ide === "rustrover") {
+    const file = path.join(dir, "workspace.xml")
+    const workspace = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : '<project version="4"></project>'
+    if (!workspace.includes('name="RustProjectSettings"')) {
+      const cargo = Bun.which("cargo")
+      if (!cargo) throw new Error("Rust toolchain is missing; install cargo on this VM")
+      const settings = `<component name="RustProjectSettings"><option name="toolchainHomeDirectory" value="${xml(path.dirname(cargo))}" /></component>`
+      if (!workspace.includes("</project>")) throw new Error(`Invalid RustRover project settings: ${file}`)
+      fs.writeFileSync(file, workspace.replace("</project>", `${settings}</project>`), { mode: 0o600 })
+    }
+    if (value.component === path.join(value.root, "packages/veritly-data/runtime")) {
+      const target = path.join(dir, "runConfigurations/Veritly_Data.xml")
+      const template = fs.readFileSync(path.join(value.root, ".run/Veritly_Data.run.xml"), "utf8")
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      save(target, template.replaceAll("$PROJECT_DIR$", xml(value.root)))
+    }
+  }
 }
 
 export function address(url: string) {

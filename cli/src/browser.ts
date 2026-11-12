@@ -37,12 +37,10 @@ export async function tab(endpoint: string, url: string) {
   if (!Array.isArray(data)) throw new Error("Browser target list is invalid")
   const origin = new URL(url).origin
   const found = data.filter((item): item is Json => {
-    if (!object(item) || item.type !== "page" || typeof item.url !== "string") return false
-    try {
-      return new URL(item.url).origin === origin
-    } catch {
-      return false
-    }
+    if (!object(item)) throw new Error("Browser returned an invalid target")
+    if (item.type !== "page") return false
+    if (typeof item.url !== "string") throw new Error("Browser page has no URL")
+    return new URL(item.url).origin === origin
   })
   if (found.length !== 1) throw new Error(`Expected one browser tab for ${origin}; found ${found.length}`)
   const value = found[0].webSocketDebuggerUrl
