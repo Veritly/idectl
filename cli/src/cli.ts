@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { address, browser, prepare, scope } from "./project"
+import { inspect, mounted, reload, tab } from "./browser"
 
 type Json = Record<string, unknown>
 type Ide = {
@@ -1217,26 +1218,110 @@ async function readiness(target: string) {
   const cfg = scope(root, target)
   if (cfg.ide !== "webstorm") throw new Error("ready currently checks a WebStorm browser project")
   if (!url) throw new Error("ready requires --url with the application URL")
-  const ide = (await endpoints()).find((item) => item.id === "webstorm")
-  if (!ide) throw new Error("WebStorm debugger is not active; run doctor and open the component")
-  const [runs, sessions, browser, page] = await Promise.all([
-    tool(ide, "list_run_configurations", { project_path: cfg.project }),
-    tool(ide, "list_debug_sessions", { project_path: cfg.project }),
-    launchedBrowser(ide),
-    fetch(url, { signal: AbortSignal.timeout(3000) }),
+  new URL(url)
+  const active = await attempt(() => endpoints())
+  const ide = active.ok ? active.value.find((item) => item.id === "webstorm") : undefined
+  const [runs, live, web, http] = await Promise.all([
+    ide ? attempt(() => tool(ide, "list_run_configurations", { project_path: cfg.project })) : undefined,
+    ide ? attempt(() => tool(ide, "list_debug_sessions", { project_path: cfg.project })) : undefined,
+    ide ? attempt(() => launchedBrowser(ide)) : undefined,
+    attempt(async () => {
+      const res = await fetch(url, { signal: AbortSignal.timeout(3000) })
+      return { ok: res.ok, status: res.status }
+    }),
   ])
-  const tabs: unknown = await (await fetch(`${browser.endpoint}/json/list`, { signal: AbortSignal.timeout(3000) })).json()
-  const origin = new URL(url).origin
-  const checks = {
-    project: rows(runs, "configurations").some((item) => item.name === "Veritly Browser"),
-    session: rows(sessions, "sessions").some(
-      (item) => item.runConfigurationName === "Veritly Browser" && ["running", "paused"].includes(String(item.state)),
-    ),
-    browser: Array.isArray(tabs) && tabs.some((item) => object(item) && typeof item.url === "string" && item.url.startsWith(`${origin}/`)),
-    page: page.ok,
-    breakpoint: ide.tools.some((item) => item.name === "set_breakpoint"),
+  const configs = runs?.ok ? rows(runs.value, "configurations") : []
+  const selected = configs.find((item) => item.name === "Veritly Browser")
+  const matches = typeof selected?.description === "string" && selected.description.includes(new URL(url).href)
+  const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === "Veritly Browser") : []
+  const state = sessions.length === 1 ? sessions[0].state : undefined
+  const found = web?.ok ? await attempt(() => tab(web.value.endpoint, url)) : undefined
+  const page = web?.ok && found?.ok && state !== "paused" ? await attempt(() => inspect(web.value.endpoint, url)) : undefined
+  const stages = {
+    ide: { ok: Boolean(ide), ...(!active.ok ? { error: active.error } : {}) },
+    project: { ok: Boolean(selected) && matches, ...(!runs?.ok && runs ? { error: runs.error } : {}) },
+    session: { ok: sessions.length === 1 && ["running", "paused"].includes(String(state)), state, count: sessions.length },
+    browser: { ok: Boolean(web?.ok && found?.ok), ...(!web?.ok && web ? { error: web.error } : {}), ...(!found?.ok && found ? { error: found.error } : {}) },
+    http: http.ok ? http.value : { ok: false, error: http.error },
+    app: {
+      ok: Boolean(page?.ok && mounted(page.value.page)),
+      state: state === "paused" ? "paused" : page?.ok ? (mounted(page.value.page) ? "mounted" : "not_mounted") : "unknown",
+      ...(page?.ok ? { document: page.value.page.document, elements: page.value.page.elements } : {}),
+      ...(!page?.ok && page ? { error: page.error } : {}),
+    },
+    breakpoint: { ok: Boolean(ide?.tools.some((item) => item.name === "set_breakpoint")), binding: "unknown" },
   }
-  return { ok: Object.values(checks).every(Boolean), project: cfg.project, url, checks, status: page.status, browser }
+  return {
+    ok: Object.values(stages).every((stage) => stage.ok),
+    project: cfg.project,
+    url,
+    stages,
+    ...(page?.ok ? { errors: page.value.errors, errorScope: page.value.scope } : {}),
+    ...(web?.ok ? { browser: web.value } : {}),
+  }
+}
+
+async function diagnosis(ide: Endpoint) {
+  if (ide.id !== "webstorm") return { reason: "no_pause", binding: "unknown" }
+  const [list, runs, web] = await Promise.all([
+    attempt(() => tool(ide, "list_breakpoints")),
+    attempt(() => configs(ide)),
+    attempt(() => launchedBrowser(ide)),
+  ])
+  const cfg = runs.ok ? runs.value.find((item) => item.name === "Veritly Browser") : undefined
+  const match = typeof cfg?.description === "string" ? cfg.description.match(/uri: (\S+), engine:/) : undefined
+  const address = url || match?.[1]
+  const page = address && web.ok ? await attempt(() => inspect(web.value.endpoint, address)) : undefined
+  const enabled = list.ok ? rows(list.value, "breakpoints").filter((item) => item.type === "line" && item.enabled === true) : []
+  return {
+    reason: !page?.ok ? "page_state_unknown" : !mounted(page.value.page) ? "app_not_mounted" : list.ok && !enabled.length ? "no_enabled_breakpoints" : "no_breakpoint_hit",
+    app: page?.ok ? { document: page.value.page.document, mounted: mounted(page.value.page), elements: page.value.page.elements } : { state: "unknown", ...(!page?.ok && page ? { error: page.error } : {}) },
+    breakpoints: { enabled: list.ok ? enabled.length : null, binding: "unknown", ...(list.ok ? {} : { error: list.error }) },
+    ...(page?.ok ? { errors: page.value.errors, errorScope: page.value.scope } : {}),
+  }
+}
+
+async function browserSmoke() {
+  if (!url) throw new Error("test browser requires --url")
+  const cfg = scope(root, "packages/app")
+  if (!project || path.resolve(project) !== cfg.project) throw new Error(`test browser requires --project ${cfg.project}`)
+  const ide = await endpoint()
+  if (ide.id !== "webstorm") throw new Error("test browser requires WebStorm")
+  const ready = await readiness("packages/app")
+  if (!ready.ok || !ready.browser) throw new Error(`Browser is not ready: ${JSON.stringify(ready.stages)}`)
+  const list = rows(await tool(ide, "list_breakpoints"), "breakpoints")
+  if (list.some((item) => item.enabled === true)) throw new Error("Disable existing breakpoints before test browser")
+  const target = path.join(root, "packages/app/src/entry.tsx")
+  const source = await Bun.file(target).text()
+  const line = source.split("\n").findIndex((row) => row.trim() === "render(") + 1
+  if (!line) throw new Error("App render location not found")
+  const point = await tool(ide, "set_breakpoint", { file_path: target, line })
+  if (!object(point)) throw new Error("IDE returned an invalid breakpoint")
+  const id = field(point, ["breakpointId", "breakpoint_id", "id"])
+  if (!id) throw new Error("IDE did not return a breakpoint ID; inspect breakpoints before retrying")
+  const state = { paused: false }
+  try {
+    await reload(ready.browser.endpoint, url)
+    const hit = await tool(ide, "wait_for_pause", { timeout: 5 }, 7000)
+    if (!object(hit) || hit.state !== "paused" || !object(hit.breakpointHit) || hit.breakpointHit.breakpointId !== id)
+      throw new Error(`App breakpoint did not hit: ${JSON.stringify(pause(hit))}; ${JSON.stringify(await diagnosis(ide))}`)
+    state.paused = true
+    const value = await tool(ide, "evaluate_expression", { expression: "root.tagName", frame_index: 0 })
+    if (!object(value) || !object(value.result) || value.result.error || value.result.value !== '"DIV"')
+      throw new Error("Could not inspect the app root at the breakpoint")
+    await tool(ide, "step_over")
+    const step = await tool(ide, "wait_for_pause", { timeout: 5 }, 7000)
+    if (!object(step) || step.state !== "paused" || step.pausedReason !== "step")
+      throw new Error(`Debugger did not pause after stepping: ${JSON.stringify(pause(step))}`)
+    return { ok: true, breakpoint: pause(hit), expression: value, step: pause(step) }
+  } finally {
+    const removed = await attempt(() => tool(ide, "remove_breakpoint", { breakpoint_id: id }))
+    const status = await attempt(() => tool(ide, "get_debug_session_status", { include_variables: false, include_source_context: false, max_stack_frames: 1 }))
+    const paused = status.ok && object(status.value) && status.value.state === "paused" && (state.paused || (object(status.value.breakpointHit) && status.value.breakpointHit.breakpointId === id))
+    const resumed = paused ? await attempt(() => tool(ide, "resume_execution")) : undefined
+    if (!removed.ok || !status.ok || (resumed && !resumed.ok))
+      throw new Error(`Browser test cleanup failed: ${JSON.stringify({ removed, status, resumed })}`)
+  }
 }
 
 async function values(ide: Endpoint, names: string[], frame = 0) {
@@ -1306,6 +1391,7 @@ veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|s
 veritly-ide debug commands [TOOL] | TOOL [JSON|-]
 veritly-ide mcp tools | call TOOL [JSON|-]
 veritly-ide test breakpoint
+veritly-ide test browser --project PATH --url URL
 
 Use --project PATH, --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
@@ -1404,7 +1490,8 @@ async function main() {
       const target = args.shift()
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
-      print(await tool(ide, "set_breakpoint", { ...(await input(args)), file_path: path.resolve(root, target), line }))
+      const result = await tool(ide, "set_breakpoint", { ...(await input(args)), file_path: path.resolve(root, target), line })
+      print(ide.id === "webstorm" && object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove browser binding; a hit verifies it" } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()
@@ -1461,12 +1548,16 @@ async function main() {
     else if (action === "wait") {
       const timeout = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : 5
       if (timeout < 1) throw new Error("debug wait timeout must be positive")
-      const result = await tool(ide, "wait_for_pause", { timeout }, timeout * 1000 + 2000)
+      const waited = await tool(ide, "wait_for_pause", { timeout }, timeout * 1000 + 2000)
       if (!details && args.length) throw new Error("debug wait variable names require --inspect")
+      const status = object(waited) && waited.state !== "paused" ? await attempt(() => tool(ide, "get_debug_session_status", { include_variables: false, include_source_context: false, max_stack_frames: 5 })) : undefined
+      const result = status?.ok && object(status.value) && status.value.state === "paused" ? status.value : waited
       print(
         details && object(result) && result.state === "paused"
           ? await snapshot(ide, index(), args, result)
-          : pause(result),
+          : object(result) && result.state !== "paused"
+            ? { ...pause(result), diagnosis: await diagnosis(ide) }
+            : pause(result),
       )
     } else if (action === "inspect") {
       const selected = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : index()
@@ -1517,8 +1608,11 @@ async function main() {
     }
     return 0
   }
-  if (group === "test" && args.shift() === "breakpoint") {
-    print(await smoke())
+  if (group === "test") {
+    const action = args.shift()
+    if (action === "breakpoint") print(await smoke())
+    else if (action === "browser") print(await browserSmoke())
+    else throw new Error("test expects breakpoint|browser")
     return 0
   }
   throw new Error(`unknown command ${group}`)
