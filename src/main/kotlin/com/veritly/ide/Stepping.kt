@@ -13,7 +13,7 @@ class Stepping : StepFiltersProvider, CidrDebugProcessConfigurator {
     if (process.runParameters.debuggerDriverConfiguration !is LLDBDriverConfiguration) return
     // Native IDE filters do not intercept inline steps inside the same machine frame.
     process.postCommand { driver ->
-      driver.executeInterpreterCommand(-1, -1, "settings set target.process.thread.step-avoid-regexp '^<?(std|core|alloc)::'")
+      driver.executeInterpreterCommand(-1, -1, "settings set target.process.thread.step-avoid-regexp ^<?(std|core|alloc)::")
     }
   }
 
