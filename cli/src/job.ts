@@ -31,8 +31,16 @@ export async function wait(name: string, project: string, seconds: number) {
     }
     if (["failed", "stopped", "unknown"].includes(String(job.phase)))
       return { ok: false, phase: job.phase, service: name, job }
-    if (job.phase === "paused") return { ok: false, phase: "paused", service: name, job }
-    if (Date.now() >= until) return { ok: false, phase: "waiting", service: name, job }
+    if (job.phase === "paused") {
+      const key = Object.keys(services).find((item) => services[item] === target)
+      if (!key) throw new Error(`Unknown service ${name}`)
+      return { ok: false, phase: "paused", service: name, job, hint: `Run debug inspect --service ${key}, then debug resume --service ${key} to continue.` }
+    }
+    if (Date.now() >= until) {
+      const key = Object.keys(services).find((item) => services[item] === target)
+      if (!key) throw new Error(`Unknown service ${name}`)
+      return { ok: false, phase: "waiting", service: name, job, hint: `Run debug jobs --service ${key} or wait ${key} --service ${key} again; do not start a second launch.` }
+    }
     await Bun.sleep(Math.min(250, until - Date.now()))
   }
 }

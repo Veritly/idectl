@@ -116,15 +116,15 @@ export async function wait(name: string, seconds: number, goal = "ready") {
   while (true) {
     if (!fs.existsSync(folder)) return { ok: false, service: name, phase: "missing" }
     const state = read(folder)
-    if (state.phase === "failed") return { ok: false, ...state }
-    if (state.phase === "stopped") return { ok: goal === "stopped" && state.cleanup === "complete", ...state }
+    if (state.phase === "failed") return { ok: false, ...state, hint: state.cleanup === "complete" ? "Cleanup completed; inspect the error before starting again." : `Run debug down ${name}, then wait session ${name} --until stopped to complete cleanup.` }
+    if (state.phase === "stopped") return { ok: goal === "stopped" && state.cleanup === "complete", ...state, hint: state.cleanup === "complete" ? "Cleanup completed." : `Run debug down ${name} to complete cleanup.` }
     if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) !== state.token)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor exited; use debug down to clean up" }
     if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created > 10000)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor did not start; use debug down to clean up" }
-    if (state.phase === "paused" && goal === "ready") return { ok: false, ...state }
-    if (state.phase === "ready" && goal === "ready") return { ok: true, ...state }
-    if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase }
+    if (state.phase === "paused" && goal === "ready") return { ok: false, ...state, hint: "Inspect the paused session or resume it to continue startup." }
+    if (state.phase === "ready" && goal === "ready") return { ok: true, ...state, hint: "Attach the debug browser, set breakpoints, and trigger the action to inspect." }
+    if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase, hint: goal === "stopped" ? `Run wait session ${name} --until stopped again; cleanup is still progressing.` : `Run wait session ${name} again; the existing launch is still progressing.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
   }
 }
@@ -299,6 +299,7 @@ async function worker(name: string, cleanup: boolean) {
     while (true) {
       if (stopped()) { await clean(); return }
       const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), call(["wait", name, ...rustarg, "--timeout", "3"])])
+      if (front.phase === "missing") throw new Error("Frontend debug session disappeared during startup; inspect the Veritly Frontend run output in WebStorm")
       if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : "inspect debug jobs"}`)
       if (front.ok && back.ok) break
       const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined

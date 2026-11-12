@@ -252,8 +252,11 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
           return { ...item, environment: Object.fromEntries(Object.keys(item.environment).map((key) => [key, "[redacted]"])) }
         }) }
       : response
-    const text = JSON.stringify(result)
-    print(!full && text.length > 12000 ? { truncated: true, preview: text.slice(0, 12000), hint: "Use --full for the complete result" } : result)
+    const described = name === "xdebug_set_breakpoints" && object(result) && Array.isArray(result.results) && result.results.some((item) => object(item) && item.success === true)
+      ? { ...result, hint: "Trigger the user action and wait for a hit; breakpoint acceptance alone does not prove it will bind." }
+      : result
+    const text = JSON.stringify(described)
+    print(!full && text.length > 12000 ? { truncated: true, preview: text.slice(0, 12000), hint: "Use --full for the complete result" } : described)
     return 0
   } finally {
     await attempt(() => client.close())

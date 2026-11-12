@@ -56,7 +56,7 @@ export async function wait(id: string, seconds: number) {
       return { ...state, ok: false, phase: "unknown", error: "Request worker exited unexpectedly" }
     if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created > 10000)
       return { ...state, ok: false, phase: "unknown", error: "Request worker did not start" }
-    if (Date.now() >= until) return { ...state, ok: false, phase: "waiting" }
+    if (Date.now() >= until) return { ...state, ok: false, phase: "waiting", hint: `Check debug status --service ${String(state.service)}; if paused, inspect and resume, then run wait request ${id} again.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
   }
 }

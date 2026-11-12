@@ -198,7 +198,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
 
   async function values(ide: Endpoint, names: string[], frame = 0) {
     if (!names.length)
-      throw new Error("Choose expressions with debug vars NAME...; use debug get-variables JSON for the full scope")
+      throw new Error("While paused, use debug vars NAME or debug eval EXPRESSION with the same IDE and session selectors; use debug get-variables '{}' for the full scope before resuming")
     const results: unknown[] = []
     for (const expression of names)
       results.push(await tool(ide, "evaluate_expression", { expression, frame_index: frame }))
@@ -212,7 +212,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
 
   function pause(value: unknown) {
     if (!object(value)) throw new Error("debugger returned invalid session status")
-    return Object.fromEntries(
+    const result = Object.fromEntries(
       [
         "waitResult",
         "message",
@@ -227,6 +227,8 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
         .filter((key) => value[key] !== undefined && value[key] !== null)
         .map((key) => [key, value[key]]),
     )
+    if (value.state === "paused") result.hint = "Inspect the paused session and its variables before resuming."
+    return result
   }
 
   async function snapshot(ide: Endpoint, frame = 0, names: string[] = [], value?: unknown) {
@@ -240,13 +242,14 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
           })
         : value
     if (!object(status) || status.state !== "paused")
-      throw new Error("variable inspection requires a paused session; use debug wait --inspect or debug pause")
+      throw new Error("Variable inspection requires a paused session; trigger a breakpoint or use debug pause, then inspect before resuming")
     if (!Array.isArray(status.stackSummary)) throw new Error("Debugger returned no stack summary for the paused session")
     return {
       ...pause(status),
       stackSummary: status.stackSummary.slice(0, 5),
       sourceContext: status.sourceContext,
       evaluated: names.length ? await values(ide, names, frame) : undefined,
+      hint: "Inspect values with debug vars NAME or debug eval EXPRESSION using the same selectors before resuming.",
     }
   }
 

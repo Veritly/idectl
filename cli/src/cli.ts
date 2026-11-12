@@ -96,6 +96,7 @@ veritly-ide test breakpoint
 veritly-ide test browser --project PATH --url URL
 
 Use --service NAME for a Rust service's project and debugger, --session ID for a specific session, and --frame N for a stack frame. Rust breakpoint files select RustRover automatically.
+At a frontend pause, select the browser session and inspect variables before resuming; raw MCP tool names use underscores.
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 JetBrains tools are listed by name; use schema for details and --full for unbounded output.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
@@ -273,7 +274,7 @@ async function main() {
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
       const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
-      print(ide.id === "webstorm" && object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove browser binding; a hit verifies it" } : result)
+      print(ide.id === "webstorm" && object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove browser binding; a hit verifies it", hint: "Trigger the action, then inspect the paused browser session before resuming." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()

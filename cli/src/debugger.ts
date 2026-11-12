@@ -102,7 +102,12 @@ export function debuggerClient(opts: Options) {
 
   async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 5_000) {
     const schema = ide.tools.find((item) => item.name === name)
-    if (!schema) throw new Error(`${ide.name} does not expose ${name}`)
+    if (!schema) {
+      const alternate = name.replaceAll("-", "_")
+      if (alternate !== name && ide.tools.some((item) => item.name === alternate))
+        throw new Error(`${ide.name} does not expose ${name}; raw MCP tool names use underscores: ${alternate}`)
+      throw new Error(`${ide.name} does not expose ${name}; use mcp tools to list available tool names`)
+    }
     const args = { ...input }
     if (!object(schema.inputSchema)) throw new Error(`${name} has an invalid input schema`)
     const props = schema.inputSchema.properties
@@ -123,7 +128,7 @@ export function debuggerClient(opts: Options) {
       const live = rows(result, "sessions")
       if (live.length > 1)
         throw new Error(
-          `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}`,
+          `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}; for frontend inspection select the paused Veritly Browser session and inspect before resuming`,
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }

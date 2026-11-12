@@ -133,7 +133,7 @@ async function intercept(item: Spec) {
   if (active) {
     const value = route(active)
     if (!value.intercepts.length || !value.intercepts.every((row) => row.target_host === "127.0.0.1" && row.target_port === port(item)))
-      throw new Error(`${item.workload} already forwards to a different target; existing intercept preserved`)
+      throw new Error(`${item.workload} already forwards to a different target; run telepresence list to inspect its owner, and preserve the existing intercept`)
     return { created: false, value }
   }
   await command(
@@ -435,8 +435,8 @@ export async function routing(enable: boolean, name: string) {
   const listener = (await sockets()).find((row) => row.port === port)
   const target = path.join(root, cfg.binary)
   if (!listener?.pid || !fs.existsSync(target) || fs.realpathSync(`/proc/${listener.pid}/exe`) !== fs.realpathSync(target))
-    throw new Error(`The local ${name} binary is not listening on port ${port}; start its debugger first`)
-  if (!(await health(item)).ok) throw new Error(`Local ${name} is not ready on port ${port}`)
+    throw new Error(`The local ${name} binary is not listening on port ${port}; run debug start ${name}, then wait ${name} --service ${name}`)
+  if (!(await health(item)).ok) throw new Error(`Local ${name} is not ready on port ${port}; run wait ${name} --service ${name} before routing`)
   const result = await intercept(item)
   return { ok: true, created: result.created, intercept: result.value }
 }
