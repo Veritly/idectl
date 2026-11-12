@@ -8,6 +8,7 @@ import { doctor } from "./doctor"
 import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
+import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 
 const args = process.argv.slice(2)
 
@@ -54,8 +55,9 @@ const { launchedBrowser, endpoints, endpoint, tool, config, launch } = debug
 const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend } = checks(debug, { project, url })
 
 const usage = `veritly-ide doctor [--ide ID] [--port PORT]
+veritly-ide plugin retry
 veritly-ide ready PATH --url URL
-veritly-ide wait frontend|data|server|edge|office|gateway|governor [--timeout SECONDS] [--json]
+veritly-ide wait plugin|frontend|data|server|edge|office|gateway|governor [--timeout SECONDS] [--json]
 veritly-ide ides
 veritly-ide connect
 veritly-ide open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
@@ -91,6 +93,11 @@ async function main() {
     print(value)
     return value.ok ? 0 : 1
   }
+  if (group === "plugin") {
+    if (args.shift() !== "retry" || args.length) throw new Error("plugin expects retry")
+    print(retryPlugin())
+    return 0
+  }
   if (group === "ready") {
     const target = args.shift()
     if (!target) throw new Error("ready requires a component path")
@@ -101,6 +108,15 @@ async function main() {
   if (group === "wait") {
     const name = args.shift()
     if (!name || args.length) throw new Error("wait requires one service name")
+    if (name === "plugin") {
+      const ide = ides.find((item) => item.id === (chosen || "rustrover"))
+      if (!ide) throw new Error(`Unknown IDE ${chosen}`)
+      const bin = launcher(ide)
+      if (!bin) throw new Error(`${ide.name} is not installed`)
+      const result = await waitPlugin(ide, bin, timeout ? Number(timeout) : 5)
+      print(result)
+      return result.ok ? 0 : result.phase === "plugin_failed" ? 1 : 2
+    }
     if (name === "frontend") {
       const result = await frontend(timeout ? Number(timeout) : 5)
       print(result)
@@ -141,6 +157,7 @@ async function main() {
   if (group === "open" || group === "launch") {
     const value = await lifecycle({ project, chosen, attach, url, tunnel, endpoints, tool, kill }).open(args)
     print(value)
+    if (value.phase === "plugin_failed") return 1
     return value.ok ? 0 : 2
   }
   if (group === "close") {

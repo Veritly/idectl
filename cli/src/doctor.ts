@@ -3,6 +3,7 @@ import path from "node:path"
 import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened } from "./core"
 import { cluster, port } from "./service"
 import { jetbrains } from "./jetbrains"
+import { inspect } from "./plugin"
 import type { debuggerClient } from "./debugger"
 
 export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { chosen?: string; project?: string }) {
@@ -41,6 +42,8 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     ? active.find((item) => item.id === chosen)
     : active.find((item) => item.id === "webstorm") || active[0]
   const known = selected ? ides.find((item) => item.id === selected.id) : undefined
+  const bin = known ? launcher(known) : undefined
+  const plugin = known && bin ? await attempt(async () => inspect(known, bin)) : { ok: false as const, error: "No IDE selected" }
   const mcp = known ? known.port + 300 : undefined
   const listener = mcp ? (await sockets()).find((item) => item.port === mcp) : undefined
   const bridge = mcp && selected?.pid && listener?.pid === selected.pid
@@ -98,6 +101,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
       policies?.["/workspace/node_modules"] === "Ignore",
     ide: Boolean(selected),
     jetbrains: bridge.ok,
+    plugin: plugin.ok && plugin.value.ok,
     project: runs.ok,
     services: specs.every((item) => names.includes(item.workload)),
   }
@@ -120,6 +124,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     })),
     selected: selected ? { id: selected.id, port: selected.port, tools: selected.tools.length } : undefined,
     jetbrains: bridge.ok ? { port: mcp, tools: bridge.value } : bridge,
+    plugin: plugin.ok ? plugin.value : plugin,
     configurations: runs.ok ? loaded : runs,
     services: specs.map((item) => ({
       id: item.id,

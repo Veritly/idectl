@@ -6,6 +6,7 @@ import { root, ides, object, command, attempt, launcher, sockets, owner, record,
 import { jetbrains } from "./jetbrains"
 import type { Json, Endpoint } from "./core"
 import { settings } from "./setup"
+import { ensure } from "./plugin"
 
 type Context = {
   project?: string
@@ -73,6 +74,10 @@ export function lifecycle(ctx: Context) {
       const status = await owner(listener)
       if (!status.verified) throw new Error(`Port ${ide.port}: ${status.reason}; no IDE launched`)
     }
+    const plugin = ensure(ide, bin, Boolean(listener))
+    if (!plugin.ok) return { ...plugin, ide: ide.id, project: cfg.project }
+    if (!listener && plugin.running)
+      return { ok: false, phase: "ide_restart_required", ide: ide.id, project: cfg.project, message: `Close ${ide.name} after finishing active work, then open the project again to enable its debugger connection` }
     if (!project) prepare(cfg as ReturnType<typeof scope>)
     if (listener && !project) {
       const live = (await endpoints()).find((item) => item.id === ide.id)
