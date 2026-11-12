@@ -137,7 +137,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     const name = aliases[action || ""] || args.shift()?.replaceAll("-", "_")
     if (!name) throw new Error("jetbrains expects tools [FILTER], schema TOOL, or call TOOL [JSON|-]")
     const schema = tools.find((item) => item.name === name)
-    if (!schema) throw new Error(`JetBrains MCP does not expose ${name}`)
+    if (!schema) throw new Error(`JetBrains MCP does not expose ${name}; use ${action && aliases[action] ? `debug ${action === "output" ? "console" : action} with the same IDE/service selector` : "jetbrains tools to discover native integration tools"}`)
     if (action === "schema") {
       print(full ? schema : { name: schema.name, description: typeof schema.description === "string" ? schema.description.slice(0, 400) : undefined, inputSchema: schema.inputSchema })
       return 0

@@ -74,7 +74,7 @@ export function preview(endpoint: string) {
       tool: "preview_open",
       arguments: { debugEndpoint: endpoint, reuseExistingTab: false },
     },
-    hint: "Use T3 preview_status then preview_open with these arguments; native CUA browser discovery is separate.",
+    hint: "After T3 preview_status, call preview_open with preview.arguments even if status says available:false and tabId:null; that means no preview tab is open yet.",
   }
 }
 
