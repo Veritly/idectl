@@ -13,6 +13,7 @@ dependencies {
     local(providers.gradleProperty("idePath"))
     bundledPlugin("com.intellij.mcpServer")
     bundledPlugin("com.jetbrains.rust")
+    bundledPlugin("com.intellij.nativeDebug")
   }
 }
 
