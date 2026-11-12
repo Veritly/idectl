@@ -244,10 +244,13 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (!object(status) || status.state !== "paused")
       throw new Error("Variable inspection requires a paused session; trigger a breakpoint or use debug pause, then inspect before resuming")
     if (!Array.isArray(status.stackSummary)) throw new Error("Debugger returned no stack summary for the paused session")
+    const variables = await tool(ide, "get_variables", { frame_index: frame })
+    if (!object(variables) || !Array.isArray(variables.variables)) throw new Error("Debugger returned no variables for the paused frame")
     return {
       ...pause(status),
       stackSummary: status.stackSummary.slice(0, 5),
       sourceContext: status.sourceContext,
+      variables: variables.variables,
       evaluated: names.length ? await values(ide, names, frame) : undefined,
       hint: "Inspect values with debug vars NAME or debug eval EXPRESSION using the same selectors before resuming.",
     }

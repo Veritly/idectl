@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import path from "node:path"
-import { aliases, dispatch } from "./jetbrains"
+import { dispatch } from "./jetbrains"
 import { root, file, namespace, ides, specs, object, print, message, attempt, launcher, input, opened, rows, field } from "./core"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
@@ -65,7 +65,7 @@ function index() {
 }
 
 
-const debug = debuggerClient({ chosen, override, session, project })
+const debug = debuggerClient({ chosen, override, session: scope ? explicitSession : session, project, configuration: scope && context && (!selected || path.resolve(selected) === context.project) ? service(scope) : undefined })
 const { launchedBrowser, endpoints, endpoint, tool, config, launch } = debug
 const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend } = checks(debug, { project, url })
 
@@ -252,29 +252,12 @@ async function main() {
   if (group === "breakpoint") {
     const ide = await endpoint()
     const action = args.shift()
-    if (ide.id === "rustrover") {
-      if (action === "list") return dispatch(ide, ["call", "xdebug_list_breakpoints"], { project, timeout, full, session })
-      if (action === "set") {
-        const target = args.shift()
-        const line = Number(args.shift())
-        if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
-        const values = await input(args)
-        const item = { isLogMessage: false, isLogStack: false, isCaptureThreadDump: false, temporary: false, suspendPolicy: "ALL", enabled: true, ...values, ...(once ? { temporary: true } : {}), filePath: path.resolve(root, target), line }
-        return dispatch(ide, ["call", "xdebug_set_breakpoints", JSON.stringify({ breakpoints: [item] })], { project, timeout, full, session })
-      }
-      if (action === "remove") {
-        const id = args.shift()
-        if (!id) throw new Error("breakpoint remove requires an ID")
-        return dispatch(ide, ["call", "xdebug_remove_breakpoints", JSON.stringify({ breakpoints: [{ breakpointId: id, owner: "agent" }] })], { project, timeout, full, session })
-      }
-      throw new Error("breakpoint expects set|list|remove")
-    }
     if (action === "set") {
       const target = args.shift()
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
       const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
-      print(ide.id === "webstorm" && object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove browser binding; a hit verifies it", hint: "Trigger the action, then inspect the paused browser session before resuming." } : result)
+      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action, then inspect the paused session before resuming." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()
@@ -304,13 +287,7 @@ async function main() {
     if (ide.id === "rustrover") {
       if (!action) throw new Error("debug requires a command")
       if (action === "run") throw new Error("Use debug start for Rust so runtime setup is applied")
-      if (action === "commands") {
-        if (!args.length) { print({ commands: [...Object.keys(aliases), "inspect"], hint: "Use debug commands NAME for the underlying tool schema" }); return 0 }
-        const name = args.shift()!
-        if (args.length) throw new Error("debug commands accepts at most one command name")
-        if (name === "inspect") { print({ command: "inspect", tools: [aliases.stack, aliases.vars] }); return 0 }
-        return dispatch(ide, ["schema", aliases[name] || name], { project, timeout, full, session, frame: index() })
-      }
+      if (action === "builds") return dispatch(ide, [action, ...args], { project, timeout, full, session, frame: index() })
       if (["start", "jobs", "cancel", "recover"].includes(action)) {
         const name = service(args.join(" ").trim())
         const target = project ? path.resolve(project) : name && managed(name) ? sessionContext(args.join(" ").trim()).project : opened(ide)
@@ -322,7 +299,6 @@ async function main() {
         print(cancel(name, target))
         return 0
       }
-      return dispatch(ide, [action, ...args], { project, timeout, full, session, frame: index() })
     }
     if (action === "browser") {
       print(await launchedBrowser(ide))
@@ -381,9 +357,9 @@ async function main() {
         ),
       )
     else if (action === "wait") {
-      const timeout = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : 5
-      if (timeout < 1) throw new Error("debug wait timeout must be positive")
-      const waited = await tool(ide, "wait_for_pause", { timeout }, timeout * 1000 + 2000)
+      const seconds = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : timeout ? Number(timeout) : 5
+      if (!Number.isFinite(seconds) || seconds < 1) throw new Error("debug wait timeout must be positive")
+      const waited = await tool(ide, "wait_for_pause", { timeout: seconds }, seconds * 1000 + 2000)
       if (!details && args.length) throw new Error("debug wait variable names require --inspect")
       const status = object(waited) && waited.state !== "paused" ? await tool(ide, "get_debug_session_status", { include_variables: false, include_source_context: false, max_stack_frames: 5 }) : undefined
       if (status !== undefined && !object(status)) throw new Error("Debugger returned an invalid session status")
@@ -401,7 +377,9 @@ async function main() {
     } else if (action === "vars") {
       const raw = args.join(" ").trim()
       print(
-        raw.startsWith("{") || raw === "-"
+        !raw
+          ? await tool(ide, "get_variables", { frame_index: index() })
+          : raw.startsWith("{") || raw === "-"
           ? await tool(ide, "get_variables", await input(args))
           : await values(ide, args, index()),
       )

@@ -4,7 +4,7 @@ import { browsers } from "./discovery"
 import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field } from "./core"
 import type { Endpoint, Json } from "./core"
 
-type Options = { chosen?: string; override?: string; session?: string; project?: string }
+type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
 
 export function debuggerClient(opts: Options) {
   const chosen = opts.chosen
@@ -125,7 +125,9 @@ export function debuggerClient(opts: Options) {
           arguments: { project_path: args.project_path },
         }),
       )
-      const live = rows(result, "sessions")
+      const all = rows(result, "sessions")
+      const live = opts.configuration ? all.filter((row) => row.runConfigurationName === opts.configuration && ["running", "paused"].includes(String(row.state))) : all
+      if (opts.configuration && !live.length) throw new Error(`No active ${opts.configuration} debug session; check debug jobs before starting another launch`)
       if (live.length > 1)
         throw new Error(
           `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}; for frontend inspection select the paused Veritly Browser session and inspect before resuming`,
