@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
@@ -97,6 +97,7 @@ export function debuggerClient(opts: Options) {
       if (found) return found
       throw new Error(`no active Debugger MCP server found for ${chosen}`)
     }
+    if (project) return selection(rows, project)
     if (!rows.length) throw new Error("no JetBrains Debugger MCP server found; launch an IDE and enable the Debugger MCP Server plugin")
     throw new Error(`Select --service NAME or --ide ID; active IDEs: ${rows.map((row) => row.id).join(", ")}`)
   }

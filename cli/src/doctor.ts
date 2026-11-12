@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened } from "./core"
+import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened, selection } from "./core"
 import { cluster, port } from "./service"
 import { jetbrains } from "./jetbrains"
 import { inspect } from "./plugin"
@@ -40,7 +40,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   ])
   const selected = chosen
     ? active.find((item) => item.id === chosen)
-    : active.length === 1 ? active[0] : undefined
+    : project ? selection(active, project) : active.length === 1 ? active[0] : undefined
   const known = selected ? ides.find((item) => item.id === selected.id) : undefined
   const bin = known ? launcher(known) : undefined
   const plugin = known && bin ? await attempt(async () => inspect(known, bin)) : { ok: false as const, error: "No IDE selected" }

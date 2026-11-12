@@ -4,10 +4,28 @@ import fs from "node:fs"
 import os from "node:os"
 import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
-import { rows } from "../src/core"
+import { rows, record, selection } from "../src/core"
 import { wait } from "../src/job"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
+
+test("an explicit project selects its recorded active IDE and rejects ambiguity", () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), "ide-selection-"))
+  const file = record(project)
+  const ide = { id: "selection-test", name: "Selection test", pid: process.pid, port: 1, url: "http://127.0.0.1:1", tools: [] }
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  try {
+    fs.writeFileSync(file, JSON.stringify({ ide: ide.id, bridge: ide.pid, project, closed: false }))
+    expect(selection([{ ...ide, id: "other" }, ide], project)).toBe(ide)
+    expect(() => selection([{ ...ide, id: "other" }], project)).toThrow("not recorded")
+    expect(() => selection([ide, { ...ide, port: 2 }], project)).toThrow("multiple active IDEs")
+    fs.writeFileSync(file, JSON.stringify({ ide: ide.id, bridge: ide.pid, project, closed: true }))
+    expect(() => selection([ide], project)).toThrow("not recorded")
+  } finally {
+    fs.rmSync(file)
+    fs.rmdirSync(project)
+  }
+})
 
 test("readiness reports a missing service instead of claiming it is ready", async () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "ide-wait-"))

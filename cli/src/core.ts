@@ -312,6 +312,13 @@ export function opened(ide: Endpoint) {
   return unique[0]
 }
 
+export function selection(ides: Endpoint[], project: string) {
+  const found = ides.filter((ide) => projects(ide).includes(path.resolve(project)))
+  if (found.length > 1) throw new Error("This project is recorded in multiple active IDEs; also select --ide ID")
+  if (!found.length) throw new Error("This project is not recorded in an active IDE; use the project returned by open, or also select --ide ID")
+  return found[0]
+}
+
 export function stamp(pid: number) {
   try {
     const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")

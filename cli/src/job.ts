@@ -73,6 +73,10 @@ export function jobs(project: string) {
     if (state.root !== root || state.project !== project) return []
     if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) !== state.token && !["stopped", "failed"].includes(String(state.phase)))
       return [{ ...state, phase: "unknown", message: "Launch supervisor exited; inspect IDE builds and sessions before restarting" }]
+    if (state.phase === "stopped") {
+      const key = Object.keys(services).find((key) => services[key] === state.name)
+      return [{ ...state, hint: key ? `The previous launch is stopped; run debug up ${key} to start a new managed session.` : "The previous launch is stopped; start a new launch when needed." }]
+    }
     return [state]
   })
 }
