@@ -1,5 +1,5 @@
 plugins {
-  kotlin("jvm") version "2.3.21"
+  kotlin("jvm") version "2.4.21"
   id("org.jetbrains.intellij.platform") version "2.20.1"
 }
 
@@ -12,7 +12,7 @@ dependencies {
   intellijPlatform {
     local(providers.gradleProperty("idePath"))
     bundledPlugin("com.intellij.mcpServer")
-    bundledModule("intellij.platform.buildView")
+    bundledPlugin("com.jetbrains.rust")
   }
 }
 

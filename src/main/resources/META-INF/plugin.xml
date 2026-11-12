@@ -6,6 +6,7 @@
   <depends>com.intellij.modules.platform</depends>
   <depends>com.intellij.modules.lang</depends>
   <depends>com.intellij.mcpServer</depends>
+  <depends optional="true" config-file="rust.xml">com.jetbrains.rust</depends>
   <extensions defaultExtensionNs="com.intellij">
     <mcpServer.mcpToolset implementation="com.veritly.ide.Lifecycle"/>
   </extensions>

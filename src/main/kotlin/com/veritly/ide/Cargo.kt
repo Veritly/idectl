@@ -1,0 +1,48 @@
+package com.veritly.ide
+
+import com.google.gson.Gson
+import com.intellij.mcpserver.McpToolset
+import com.intellij.mcpserver.annotations.McpDescription
+import com.intellij.mcpserver.annotations.McpTool
+import com.intellij.mcpserver.project
+import com.intellij.openapi.components.service
+import com.intellij.openapi.components.Service
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.currentCoroutineContext
+import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.CargoProject
+
+@Service(Service.Level.PROJECT)
+class CargoState {
+  val pending = ConcurrentHashMap.newKeySet<Path>()
+  val errors = ConcurrentHashMap<Path, String>()
+}
+
+@Suppress("FunctionName", "unused")
+class Cargo : McpToolset {
+  @McpTool
+  @McpDescription("Attach an absolute Cargo.toml path to this IDE project. Returns whether its Cargo model is ready; retry while loading.")
+  suspend fun veritly_cargo_attach(@McpDescription("Absolute path to Cargo.toml") manifest: String): String {
+    val path = Path.of(manifest).toAbsolutePath().normalize()
+    require(path.fileName.toString() == "Cargo.toml" && Files.isRegularFile(path)) { "A Cargo.toml file is required" }
+    val cargo = currentCoroutineContext().project.service<CargoProjectsService>()
+    val state = currentCoroutineContext().project.service<CargoState>()
+    val existing = cargo.allProjects.find { it.manifest.normalize() == path }
+    if (existing == null) {
+      val err = state.errors.remove(path)
+      if (err != null) error("Cargo project attachment failed: $err")
+      if (state.pending.add(path)) {
+        cargo.attachCargoProject(path).invokeOnCompletion { cause ->
+          state.pending.remove(path)
+          if (cause != null) state.errors[path] = cause.message ?: cause.javaClass.simpleName
+        }
+      }
+      return Gson().toJson(mapOf("phase" to "attaching"))
+    }
+    val status = existing.workspaceStatus
+    if (status is CargoProject.UpdateStatus.UpdateFailed) error("Cargo project failed to load: ${status.reason}")
+    return Gson().toJson(mapOf("phase" to if (existing.workspace != null) "ready" else "loading"))
+  }
+}
