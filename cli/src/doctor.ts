@@ -40,7 +40,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   ])
   const selected = chosen
     ? active.find((item) => item.id === chosen)
-    : active.find((item) => item.id === "webstorm") || active[0]
+    : active.length === 1 ? active[0] : undefined
   const known = selected ? ides.find((item) => item.id === selected.id) : undefined
   const bin = known ? launcher(known) : undefined
   const plugin = known && bin ? await attempt(async () => inspect(known, bin)) : { ok: false as const, error: "No IDE selected" }
@@ -111,6 +111,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     env: file,
     namespace,
     context,
+    selection: !selected && active.length > 1 ? `Multiple IDEs are active; use --ide to check ${active.map((item) => item.id).join(" or ")}` : undefined,
     checks,
     project: target,
     tunnel: daemon ? { status: daemon.status, context: daemon.kubernetes_context, namespaces: mapped } : telepresence,

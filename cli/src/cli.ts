@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import path from "node:path"
-import { dispatch } from "./jetbrains"
+import { aliases, dispatch } from "./jetbrains"
 import { root, file, namespace, ides, specs, object, print, message, attempt, launcher, input, opened, rows, field } from "./core"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
@@ -9,7 +9,8 @@ import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
-import { up as sessionUp, down as sessionDown, wait as sessionWait } from "./session"
+import { up as sessionUp, down as sessionDown, wait as sessionWait, context as sessionContext, matching as sessionMatching } from "./session"
+import { start as requestStart, wait as requestWait } from "./request"
 
 const args = process.argv.slice(2)
 
@@ -31,14 +32,27 @@ function flag(name: string) {
   return true
 }
 
-const chosen = option("--ide")
+const explicit = option("--ide")
 const override = option("--port")
-const session = option("--session")
-const project = option("--project")
+const explicitSession = option("--session")
+const selected = option("--project")
+const scope = option("--service")
+if (scope && (explicit && explicit !== "rustrover" || override)) throw new Error("--service selects RustRover; do not combine it with a different IDE or port")
+const context = scope ? sessionContext(scope) : (!explicit || explicit === "rustrover") && args[0] === "breakpoint" && args[1] === "set" && args[2] ? sessionMatching(args[2]) : undefined
+const project = selected || context?.project
+const job = scope && context && (!selected || path.resolve(selected) === context.project)
+  ? jobs(context.project).find((item) => item.name === service(scope) && ["running", "paused"].includes(String(item.phase)))
+  : undefined
+const session = explicitSession || (typeof job?.session === "string" || typeof job?.session === "number" ? String(job.session) : undefined)
+const web = args[0] === "debug" && ["start", "cancel"].includes(args[1] || "") && args[2] === "frontend" ||
+  ["start", "stop", "status"].includes(args[0] || "") && args[1] === "frontend"
+const chosen = explicit || (scope || args[0] === "breakpoint" && args[1] === "set" && path.extname(args[2] || "") === ".rs" ? "rustrover" : web ? "webstorm" : undefined)
 const timeout = option("--timeout")
+const until = option("--until")
 const frame = option("--frame")
 const details = flag("--inspect")
 const full = flag("--full")
+const once = flag("--once")
 flag("--json")
 const url = option("--url")
 const attach = option("--attach")
@@ -66,10 +80,12 @@ veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide route|unroute data|server|edge|office|gateway|governor
-veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
+veritly-ide breakpoint set FILE LINE [--once] [JSON] | list | remove ID
 veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 veritly-ide debug up|down data|server|edge|office|gateway|governor
-veritly-ide wait session SERVICE [--timeout SECONDS] [--json]
+veritly-ide debug request SERVICE /PATH [--timeout SECONDS]
+veritly-ide wait session SERVICE [--until ready|stopped] [--timeout SECONDS] [--json]
+veritly-ide wait request ID [--timeout SECONDS] [--json]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
 veritly-ide debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
 veritly-ide debug commands [TOOL] | TOOL [JSON|-]
@@ -79,7 +95,7 @@ veritly-ide jetbrains status | configs | output [SESSION]
 veritly-ide test breakpoint
 veritly-ide test browser --project PATH --url URL
 
-Use --project PATH, --session ID and --frame N to target context. Pass names to debug vars, or --inspect with debug wait.
+Use --service NAME for a Rust service's project and debugger, --session ID for a specific session, and --frame N for a stack frame. Rust breakpoint files select RustRover automatically.
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 JetBrains tools are listed by name; use schema for details and --full for unbounded output.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
@@ -110,12 +126,19 @@ async function main() {
   }
   if (group === "wait") {
     const name = args.shift()
+    if (name === "request") {
+      const id = args.shift()
+      if (!id || args.length) throw new Error("wait request requires one request ID")
+      const result = await requestWait(id, timeout ? Number(timeout) : 5)
+      print(result)
+      return result.ok ? 0 : "phase" in result && result.phase === "waiting" ? 2 : 1
+    }
     if (name === "session") {
       const service = args.shift()
       if (!service || args.length) throw new Error("wait session requires one service name")
-      const result = await sessionWait(service, timeout ? Number(timeout) : 5)
+      const result = await sessionWait(service, timeout ? Number(timeout) : 5, until)
       print(result)
-      return result.ok ? 0 : ["waiting", "stopping"].includes(String(result.phase)) ? 2 : 1
+      return result.ok ? 0 : ["waiting", "stopping", "paused"].includes(String(result.phase)) ? 2 : 1
     }
     if (!name || args.length) throw new Error("wait requires one service name")
     if (name === "plugin") {
@@ -131,6 +154,14 @@ async function main() {
       const result = await frontend(timeout ? Number(timeout) : 5)
       print(result)
       return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
+    }
+    if (!chosen && !project && !override && managed(name)) {
+      const current = sessionContext(name).state
+      if (current && !["stopped", "failed"].includes(String(current.phase))) {
+        const result = await sessionWait(name, timeout ? Number(timeout) : 5)
+        print(result)
+        return result.ok ? 0 : ["waiting", "stopping", "paused"].includes(String(result.phase)) ? 2 : 1
+      }
     }
     const ide = (await endpoints()).find((item) => item.id === "rustrover")
     if (!ide) throw new Error("RustRover is not running; open the service's source first")
@@ -227,7 +258,7 @@ async function main() {
         const line = Number(args.shift())
         if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
         const values = await input(args)
-        const item = { isLogMessage: false, isLogStack: false, isCaptureThreadDump: false, temporary: false, suspendPolicy: "ALL", enabled: true, ...values, filePath: path.resolve(root, target), line }
+        const item = { isLogMessage: false, isLogStack: false, isCaptureThreadDump: false, temporary: false, suspendPolicy: "ALL", enabled: true, ...values, ...(once ? { temporary: true } : {}), filePath: path.resolve(root, target), line }
         return dispatch(ide, ["call", "xdebug_set_breakpoints", JSON.stringify({ breakpoints: [item] })], { project, timeout, full, session })
       }
       if (action === "remove") {
@@ -241,7 +272,7 @@ async function main() {
       const target = args.shift()
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
-      const result = await tool(ide, "set_breakpoint", { ...(await input(args)), file_path: path.resolve(root, target), line })
+      const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
       print(ide.id === "webstorm" && object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove browser binding; a hit verifies it" } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
@@ -253,24 +284,37 @@ async function main() {
   }
   if (group === "debug") {
     const action = args.shift()
+    if (action === "request") {
+      const name = args.shift()
+      const route = args.shift()
+      if (!name || !route || args.length) throw new Error("debug request requires SERVICE /PATH")
+      print(await requestStart(name, route, timeout ? Number(timeout) : undefined))
+      return 0
+    }
     if (action === "up" || action === "down") {
       const name = args.shift()
       if (!name || args.length) throw new Error(`debug ${action} requires one service name`)
       print(action === "up" ? sessionUp(name) : sessionDown(name))
       return 0
     }
-    const rust = action && (["jobs", "builds", "recover"].includes(action) ||
-      ["start", "cancel"].includes(action) && managed(args.join(" ").trim()))
+    const rust = action && ["start", "cancel", "recover"].includes(action) && managed(args.join(" ").trim())
     const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === "rustrover") : await endpoint()
     if (!ide) throw new Error("RustRover is not running; open the service's source first")
     if (ide.id === "rustrover") {
       if (!action) throw new Error("debug requires a command")
       if (action === "run") throw new Error("Use debug start for Rust so runtime setup is applied")
+      if (action === "commands") {
+        if (!args.length) { print({ commands: [...Object.keys(aliases), "inspect"], hint: "Use debug commands NAME for the underlying tool schema" }); return 0 }
+        const name = args.shift()!
+        if (args.length) throw new Error("debug commands accepts at most one command name")
+        if (name === "inspect") { print({ command: "inspect", tools: [aliases.stack, aliases.vars] }); return 0 }
+        return dispatch(ide, ["schema", aliases[name] || name], { project, timeout, full, session, frame: index() })
+      }
       if (["start", "jobs", "cancel", "recover"].includes(action)) {
-        const target = project ? path.resolve(project) : opened(ide)
-        if (!target) throw new Error("No IDE project selected; open a project or pass --project")
-        if (action === "jobs") { print({ jobs: jobs(target) }); return 0 }
         const name = service(args.join(" ").trim())
+        const target = project ? path.resolve(project) : name && managed(name) ? sessionContext(args.join(" ").trim()).project : opened(ide)
+        if (!target) throw new Error("No IDE project selected; open a project or pass --project")
+        if (action === "jobs") { print({ jobs: scope ? jobs(target).filter((item) => item.name === service(scope)) : jobs(target) }); return 0 }
         if (!name) throw new Error(`debug ${action} requires a configuration name`)
         if (action === "start") { print(enqueue(name, target)); return 0 }
         if (action === "recover") { print(recover(name, target)); return 0 }

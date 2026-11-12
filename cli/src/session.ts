@@ -5,6 +5,7 @@ import { scope } from "./project"
 import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service } from "./job"
 import { vars, routing, frontendRoute, routeStatus } from "./service"
+import { login } from "./auth"
 
 const components: Record<string, string> = {
   data: "packages/veritly-data/runtime",
@@ -27,6 +28,31 @@ function read(folder: string) {
   const value: unknown = JSON.parse(fs.readFileSync(path.join(folder, "state.json"), "utf8"))
   if (!object(value)) throw new Error("Invalid debugging session state")
   return value
+}
+
+export function context(name: string) {
+  const key = Object.keys(components).find((item) => item === name || service(item) === name)
+  if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
+  const folder = dir(key)
+  const state = fs.existsSync(folder) ? read(folder) : undefined
+  return { project: scope(root, components[key]).project, state }
+}
+
+export function matching(file: string) {
+  const target = path.resolve(root, file)
+  const found = Object.entries(components).filter(([, component]) => {
+    const parts = component.split("/")
+    const source = path.join(root, ...parts.slice(0, parts[1] === "ai" ? 3 : 2))
+    return target.startsWith(`${source}${path.sep}`)
+  })
+  if (found.length !== 1) return
+  const active = Object.keys(components).filter((name) => {
+    const folder = dir(name)
+    if (!fs.existsSync(folder)) return false
+    return !["stopped", "failed"].includes(String(read(folder).phase))
+  })
+  if (active.length && !active.includes(found[0][0])) return
+  return context(found[0][0])
 }
 
 function save(folder: string, state: Record<string, unknown>) {
@@ -55,12 +81,13 @@ export function up(name: string) {
       fs.renameSync(folder, `${folder}-${Date.now()}`)
     }
     fs.mkdirSync(folder, { mode: 0o700 })
-    save(folder, { root, service: name, phase: "queued", cleanup: "pending", created: Date.now() })
+    const created = Date.now()
+    save(folder, { root, service: name, phase: "queued", cleanup: "pending", created })
     const log = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
     const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "worker", name], { cwd: root, stdin: "ignore", stdout: log, stderr: log })
     fs.closeSync(log)
     proc.unref()
-    return { ok: true, service: name, phase: "queued", pid: proc.pid }
+    return { ok: true, service: name, phase: "queued", created, pid: proc.pid, wait: `wait session ${name}` }
   } finally { fs.rmdirSync(lock) }
 }
 
@@ -70,28 +97,33 @@ export function down(name: string) {
   const state = read(folder)
   if (state.cleanup === "complete") return { ok: true, service: name, phase: state.phase }
   fs.writeFileSync(path.join(folder, "stop"), "", { mode: 0o600 })
+  if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created < 10000)
+    return { ok: true, service: name, phase: "stopping", created: state.created, wait: `wait session ${name} --until stopped` }
   if (typeof state.pid !== "number" || typeof state.token !== "string" || stamp(state.pid) !== state.token) {
     const log = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
     const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "cleanup", name], { cwd: root, stdin: "ignore", stdout: log, stderr: log })
     fs.closeSync(log)
     proc.unref()
   }
-  return { ok: true, service: name, phase: "stopping" }
+  return { ok: true, service: name, phase: "stopping", created: state.created, wait: `wait session ${name} --until stopped` }
 }
 
-export async function wait(name: string, seconds: number) {
+export async function wait(name: string, seconds: number, goal = "ready") {
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error("--timeout must be between 0 and 60 seconds")
+  if (!["ready", "stopped"].includes(goal)) throw new Error("--until must be ready or stopped")
   const folder = dir(name)
   const until = Date.now() + seconds * 1000
   while (true) {
     if (!fs.existsSync(folder)) return { ok: false, service: name, phase: "missing" }
     const state = read(folder)
-    if (["failed", "stopped"].includes(String(state.phase))) return { ok: false, ...state }
+    if (state.phase === "failed") return { ok: false, ...state }
+    if (state.phase === "stopped") return { ok: goal === "stopped" && state.cleanup === "complete", ...state }
     if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) !== state.token)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor exited; use debug down to clean up" }
     if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created > 10000)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor did not start; use debug down to clean up" }
-    if (state.phase === "ready") return { ok: true, ...state }
+    if (state.phase === "paused" && goal === "ready") return { ok: false, ...state }
+    if (state.phase === "ready" && goal === "ready") return { ok: true, ...state }
     if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase }
     await Bun.sleep(Math.min(250, until - Date.now()))
   }
@@ -269,7 +301,12 @@ async function worker(name: string, cleanup: boolean) {
       const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), call(["wait", name, ...rustarg, "--timeout", "3"])])
       if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : "inspect debug jobs"}`)
       if (front.ok && back.ok) break
-      update("starting services", { frontendStatus: front.phase, backendStatus: back.phase, backendJob: back.job })
+      const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined
+      update(paused ? "paused" : "starting services", {
+        frontendStatus: front.phase, backendStatus: back.phase, backendJob: back.job,
+        reason: paused ? `${paused} paused during startup; inspect and resume. If a readiness probe hits the breakpoint repeatedly, remove or disable it` : undefined,
+        resume: paused === name ? `debug resume --service ${name}` : paused ? `debug resume --ide webstorm --project ${web}` : undefined,
+      })
     }
     if (stopped()) { await clean(); return }
     update("routing frontend", { frontendRoute: { phase: "creating" } })
@@ -295,11 +332,19 @@ async function worker(name: string, cleanup: boolean) {
     await startWeb("Veritly Browser", "browser")
     const ide = await debug.endpoint()
     const browser = await debug.launchedBrowser(ide)
-    update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "pending" })
+    update("authenticating browser")
+    await login(browser.endpoint, url)
+    update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "pending" })
     while (!stopped()) {
       await Bun.sleep(3000)
       if (stopped()) break
-      const active = await sessions()
+      const active = await sessions().catch((err: unknown) => {
+        if (!(err instanceof Error) || !/timed?\s*out|timeout/i.test(err.message)) throw err
+        update("ready", { monitor: "IDE status temporarily unavailable; retrying" })
+        return undefined
+      })
+      if (!active) continue
+      if (state.monitor) update("ready", { monitor: undefined })
       for (const key of ["frontend", "browser"]) {
         const item = state[key]
         if (!object(item) || typeof item.id !== "string" || !active.some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state))))

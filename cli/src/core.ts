@@ -281,17 +281,24 @@ export function record(dir: string) {
   return path.join(root, ".veritly/ide/open", `${key}.json`)
 }
 
-export function opened(ide: Endpoint) {
+export function projects(ide: Endpoint) {
   const dir = path.join(root, ".veritly/ide/open")
-  if (!ide.pid || !fs.existsSync(dir)) return
-  return fs.readdirSync(dir).filter((file) => file.endsWith(".json")).flatMap((file) => {
+  if (!ide.pid || !fs.existsSync(dir)) return []
+  const projects = fs.readdirSync(dir).filter((file) => file.endsWith(".json")).flatMap((file) => {
     const name = path.join(dir, file)
     const state: unknown = JSON.parse(fs.readFileSync(name, "utf8"))
     if (!object(state)) throw new Error(`Invalid IDE project record: ${name}`)
     if (state.closed === true || state.ide !== ide.id || state.bridge !== ide.pid) return []
     if (state.closed !== false || typeof state.project !== "string") throw new Error(`Invalid IDE project record: ${name}`)
-    return [{ project: state.project, time: fs.statSync(name).mtimeMs }]
-  }).sort((a, b) => b.time - a.time)[0]?.project
+    return [state.project]
+  })
+  return [...new Set(projects)]
+}
+
+export function opened(ide: Endpoint) {
+  const unique = projects(ide)
+  if (unique.length > 1) throw new Error(`Multiple ${ide.name} projects are recorded (${unique.join(", ")}); select --project PATH or --service NAME`)
+  return unique[0]
 }
 
 export function stamp(pid: number) {

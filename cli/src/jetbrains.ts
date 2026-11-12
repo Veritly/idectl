@@ -1,9 +1,12 @@
 import path from "node:path"
 import fs from "node:fs"
+import { fileURLToPath } from "node:url"
 import { root, ides, object, sockets, opened, input, content, print, attempt } from "./core"
 import type { Endpoint, Json } from "./core"
 import { runtime } from "./setup"
 import { tunnel } from "./service"
+
+export const aliases: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
 
 async function runs(client: Awaited<ReturnType<typeof jetbrains>>, project: unknown) {
   const data = content(await client.call("veritly_run_status", { projectPath: project }))
@@ -105,6 +108,18 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       print(full ? found : found.map((item) => item.name))
       return 0
     }
+    if (action === "inspect") {
+      if (args.length) throw new Error("debug inspect accepts --frame, --service, --project and --session")
+      const target = project ? path.resolve(project) : opened(ide)
+      if (!target) throw new Error("No IDE project selected; open a project or pass --project")
+      const context = { projectPath: target, sessionId: opts.session }
+      const [stack, variables] = await Promise.all([
+        client.call("xdebug_get_stack", { ...context, limit: 5 }),
+        client.call("xdebug_get_frame_values", { ...context, frameIndex: opts.frame }),
+      ])
+      print({ stack: content(stack), variables: content(variables) })
+      return 0
+    }
     if (ide.id === "rustrover" && (action === "builds" || action === "cancel")) {
       const target = project ? path.resolve(project) : opened(ide)
       if (!target) throw new Error("No IDE project selected; open a project or pass --project")
@@ -119,8 +134,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       return 0
     }
 
-    const alias: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
-    const name = alias[action || ""] || args.shift()?.replaceAll("-", "_")
+    const name = aliases[action || ""] || args.shift()?.replaceAll("-", "_")
     if (!name) throw new Error("jetbrains expects tools [FILTER], schema TOOL, or call TOOL [JSON|-]")
     const schema = tools.find((item) => item.name === name)
     if (!schema) throw new Error(`JetBrains MCP does not expose ${name}`)
@@ -128,7 +142,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       print(full ? schema : { name: schema.name, description: typeof schema.description === "string" ? schema.description.slice(0, 400) : undefined, inputSchema: schema.inputSchema })
       return 0
     }
-    if (action !== "call" && !alias[action || ""]) throw new Error("jetbrains expects tools|schema|call|status|configs|output|start")
+    if (action !== "call" && !aliases[action || ""]) throw new Error("jetbrains expects tools|schema|call|status|configs|output|start")
     const seconds = timeout ? Number(timeout) : 5
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new Error("--timeout must be between 0 and 3600 seconds")
     const controls: Record<string, string> = { stop: "STOP", pause: "PAUSE", resume: "RESUME", wait: "WAIT_FOR_PAUSE", "step-over": "STEP_OVER", "step-into": "STEP_INTO", "step-out": "STEP_OUT" }
@@ -154,6 +168,28 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       const target = project ? path.resolve(project) : opened(ide)
       if (!target) throw new Error("No IDE project selected; open a project or pass --project")
       values.projectPath = target
+    }
+    if (ide.id === "rustrover" && action === "resume") {
+      const status = content(await client.call("xdebug_get_debugger_status", { projectPath: values.projectPath }))
+      if (!object(status) || !Array.isArray(status.sessions)) throw new Error("IDE returned invalid debugger sessions")
+      const paused = status.sessions.filter(object).filter((item) => item.state === "paused" && (!opts.session || item.sessionId === opts.session))
+      if (paused.length === 1 && object(paused[0].currentPosition)) {
+        const position = paused[0].currentPosition
+        const breaks = content(await client.call("xdebug_list_breakpoints", { projectPath: values.projectPath }))
+        if (!object(breaks) || !Array.isArray(breaks.breakpoints)) throw new Error("IDE returned invalid breakpoints")
+        const file = (value: unknown) => {
+          if (typeof value !== "string") return
+          if (value.startsWith("file://")) return fileURLToPath(value)
+          if (path.isAbsolute(value)) return path.normalize(value)
+        }
+        const target = file(position.filePath)
+        const once = breaks.breakpoints.filter(object).filter((item) => target && file(item.file) === target && item.line === position.line && item.owner === "agent" && item.temporary === true && item.enabled === true && typeof item.id === "string")
+        if (once.length) {
+          const result = content(await client.call("xdebug_remove_breakpoints", { projectPath: values.projectPath, breakpoints: once.map((item) => ({ breakpointId: item.id, owner: "agent" })) }))
+          if (!object(result) || !Array.isArray(result.results) || result.results.length !== once.length || !result.results.every((item) => object(item) && item.success === true))
+            throw new Error("Could not remove the hit one-shot breakpoint; session remains paused")
+        }
+      }
     }
     if (action === "start" && typeof values.configurationName === "string") {
       if (ide.id === "rustrover" && !process.env.VERITLY_IDE_JOB)

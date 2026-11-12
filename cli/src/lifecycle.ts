@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { scope, prepare, browser, address } from "./project"
-import { root, ides, object, command, attempt, launcher, sockets, owner, record, stamp, rows, field, opened, content } from "./core"
+import { root, ides, object, command, attempt, launcher, sockets, owner, record, stamp, rows, field, projects, content } from "./core"
 import { jetbrains } from "./jetbrains"
 import type { Json, Endpoint } from "./core"
 import { settings } from "./setup"
@@ -89,7 +89,8 @@ export function lifecycle(ctx: Context) {
         const tools = await client.tools()
         if (!["veritly_open_windows", "veritly_trust_project"].every((name) => tools.some((item) => item.name === name)))
           throw new Error(`Install the current Veritly JetBrains lifecycle plugin in ${ide.name} and reopen the IDE`)
-        const target = opened(live) || cfg.project
+        const available = projects(live)
+        const target = available.includes(cfg.project) ? cfg.project : available[0] || cfg.project
         await client.call("veritly_open_windows", { projectPath: target })
         const result = content(await client.call("veritly_trust_project", { directory: cfg.project, projectPath: target }))
         if (!object(result) || result.trusted !== true) throw new Error("IDE did not trust the generated debugger project")
@@ -154,6 +155,15 @@ export function lifecycle(ctx: Context) {
           throw new Error(
             `Waiting for ${ide.name} Debugger MCP on port ${ide.port}; check ${log} if startup does not finish`,
           )
+        const bridge = (await sockets()).find((item) => item.port === ide.port + 300)
+        if (!bridge || bridge.pid !== live.pid) throw new Error(`Waiting for ${ide.name} JetBrains MCP`)
+        const client = await jetbrains(ide.port + 300)
+        try {
+          const configs = content(await client.call("get_run_configurations", { projectPath: cfg.project }, 5000))
+          if (!object(configs) || !Array.isArray(configs.configurations)) throw new Error(`${ide.name} returned invalid project configurations`)
+        } finally {
+          await attempt(() => client.close())
+        }
         const runs = rows(await tool(live, "list_run_configurations", { project_path: cfg.project }), "configurations")
         if (
           url &&

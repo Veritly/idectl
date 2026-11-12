@@ -348,6 +348,31 @@ const routes: Record<string, { workload: string; health: string; binary: string;
   governor: { workload: "bifrost-governor", health: "/ready", binary: "packages/ai/target/debug/veritly-ai-governor" },
 }
 
+export async function clusterTarget(name: string) {
+  const cfg = routes[name]
+  if (!cfg) throw new Error(`Unknown Rust service ${name}`)
+  const check = await command(["bun", "script/local-k8s.ts", "doctor"], root, 10_000)
+  if (check.includes("local guard: blocked")) throw new Error("Local cluster doctor rejected this Kubernetes target")
+  const [deployment, services] = await Promise.all([
+    command(["kubectl", "-n", namespace, "get", "deployment", cfg.workload, "-o", "json"], root, 5000).then(parse),
+    command(["kubectl", "-n", namespace, "get", "services", "-o", "json"], root, 5000).then(parse),
+  ])
+  if (!object(deployment) || !object(deployment.spec) || !object(deployment.spec.template) || !object(deployment.spec.template.metadata) || !object(deployment.spec.template.metadata.labels)) throw new Error("Kubernetes deployment has no pod labels")
+  const labels = deployment.spec.template.metadata.labels
+  if (!object(services) || !Array.isArray(services.items)) throw new Error("Kubernetes returned invalid services")
+  const found = services.items.filter(object).flatMap((item) => {
+    if (!object(item.metadata) || typeof item.metadata.name !== "string" || !object(item.spec) || !object(item.spec.selector) || !Array.isArray(item.spec.ports)) return []
+    if (cfg.service && item.metadata.name !== cfg.service) return []
+    const selectors = Object.entries(item.spec.selector)
+    if (!selectors.length || !selectors.every(([key, value]) => labels[key] === value)) return []
+    const ports = item.spec.ports.filter(object).filter((port) => port.name === "http" && typeof port.port === "number")
+    if (ports.length !== 1) return []
+    return [{ name: item.metadata.name, port: ports[0].port }]
+  })
+  if (found.length !== 1) throw new Error(`Expected one HTTP Service for ${cfg.workload}; found ${found.map((item) => item.name).join(", ") || "none"}`)
+  return `http://${found[0].name}.${namespace}.svc.cluster.local:${found[0].port}`
+}
+
 export async function routeStatus(name: string) {
   const cfg = name === "frontend" ? spec(name) : routes[name]
   if (!cfg) throw new Error(`Unknown Rust service ${name}`)

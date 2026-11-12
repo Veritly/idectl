@@ -96,10 +96,8 @@ export function debuggerClient(opts: Options) {
       if (found) return found
       throw new Error(`no active Debugger MCP server found for ${chosen}`)
     }
-    const webstorm = rows.find((row) => row.id === "webstorm")
-    if (webstorm) return webstorm
-    if (rows[0]) return rows[0]
-    throw new Error("no JetBrains Debugger MCP server found; launch an IDE and enable the Debugger MCP Server plugin")
+    if (!rows.length) throw new Error("no JetBrains Debugger MCP server found; launch an IDE and enable the Debugger MCP Server plugin")
+    throw new Error(`Select --service NAME or --ide ID; active IDEs: ${rows.map((row) => row.id).join(", ")}`)
   }
 
   async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 5_000) {

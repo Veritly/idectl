@@ -3,6 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { errors, inspect, mounted, tab } from "../src/browser"
+import { inject } from "../src/auth"
 
 test("groups repeated errors without exposing their text or URLs", () => {
   const result = errors([
@@ -19,11 +20,12 @@ test("groups repeated errors without exposing their text or URLs", () => {
 })
 
 test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after the app mounts", async () => {
-  const state = { mounted: false }
+  const state = { mounted: false, authenticated: false }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     fetch(req) {
+      if (req.headers.get("cookie")?.includes("veritly-session=test-session")) state.authenticated = true
       if (new URL(req.url).pathname === "/state") return Response.json(state)
       return new Response(`<!doctype html><div id="root"></div><script>
         setInterval(async () => {
@@ -43,6 +45,10 @@ test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after
     while (!fs.existsSync(file) && Date.now() < deadline) await Bun.sleep(50)
     if (!fs.existsSync(file)) throw new Error("Chromium did not start its debug endpoint")
     const endpoint = `http://127.0.0.1:${fs.readFileSync(file, "utf8").split("\n")[0]}`
+    await inject(endpoint, url, "test-session")
+    const limit = Date.now() + 3000
+    while (!state.authenticated && Date.now() < limit) await Bun.sleep(50)
+    expect(state.authenticated).toBe(true)
     await expect(tab(endpoint, "http://127.0.0.1:1/")).rejects.toThrow("may have redirected for sign-in")
     const first = await inspect(endpoint, url)
     expect(mounted(first.page)).toBe(false)
