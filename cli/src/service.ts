@@ -348,6 +348,37 @@ const routes: Record<string, { workload: string; health: string; binary: string;
   governor: { workload: "bifrost-governor", health: "/ready", binary: "packages/ai/target/debug/veritly-ai-governor" },
 }
 
+export async function routeStatus(name: string) {
+  const cfg = name === "frontend" ? spec(name) : routes[name]
+  if (!cfg) throw new Error(`Unknown Rust service ${name}`)
+  const row = (await workloads()).find((item) => item.name === cfg.workload && intercepted(item))
+  if (!row) return
+  const value = route(row)
+  const ids = value.intercepts.map((item) => {
+    if (typeof item.id !== "string" || !item.id) throw new Error("Intercept has no stable identifier")
+    return item.id
+  }).sort()
+  return { ids }
+}
+
+export async function frontendRoute(enable: boolean) {
+  const item = spec("frontend")
+  const check = await command(["bun", "script/local-k8s.ts", "doctor"], root, 10_000)
+  if (check.includes("local guard: blocked")) throw new Error("Local cluster doctor rejected this Kubernetes target")
+  await tunnel()
+  const active = (await workloads()).find((row) => row.name === item.workload && intercepted(row))
+  if (!enable) {
+    if (!active) return { ok: true, detached: false }
+    const existing = route(active)
+    if (!existing.intercepts.length || !existing.intercepts.every((row) => row.target_host === "127.0.0.1" && row.target_port === port(item)))
+      throw new Error("Frontend traffic is intercepted by a different target; existing intercept preserved")
+    return { ok: true, ...(await detach(item)) }
+  }
+  if (!(await health(item)).ok) throw new Error(`Local frontend is not ready on port ${port(item)}`)
+  const result = await intercept(item)
+  return { ok: true, created: result.created, intercept: result.value }
+}
+
 export async function localHealth(name: string) {
   const cfg = routes[name]
   if (!cfg) throw new Error(`Unknown Rust service ${name}`)

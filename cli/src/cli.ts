@@ -9,6 +9,7 @@ import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
+import { up as sessionUp, down as sessionDown, wait as sessionWait } from "./session"
 
 const args = process.argv.slice(2)
 
@@ -67,6 +68,8 @@ veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide route|unroute data|server|edge|office|gateway|governor
 veritly-ide breakpoint set FILE LINE [JSON] | list | remove ID
 veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
+veritly-ide debug up|down data|server|edge|office|gateway|governor
+veritly-ide wait session SERVICE [--timeout SECONDS] [--json]
 veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
 veritly-ide debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
 veritly-ide debug commands [TOOL] | TOOL [JSON|-]
@@ -107,6 +110,13 @@ async function main() {
   }
   if (group === "wait") {
     const name = args.shift()
+    if (name === "session") {
+      const service = args.shift()
+      if (!service || args.length) throw new Error("wait session requires one service name")
+      const result = await sessionWait(service, timeout ? Number(timeout) : 5)
+      print(result)
+      return result.ok ? 0 : ["waiting", "stopping"].includes(String(result.phase)) ? 2 : 1
+    }
     if (!name || args.length) throw new Error("wait requires one service name")
     if (name === "plugin") {
       const ide = ides.find((item) => item.id === (chosen || "rustrover"))
@@ -243,6 +253,12 @@ async function main() {
   }
   if (group === "debug") {
     const action = args.shift()
+    if (action === "up" || action === "down") {
+      const name = args.shift()
+      if (!name || args.length) throw new Error(`debug ${action} requires one service name`)
+      print(action === "up" ? sessionUp(name) : sessionDown(name))
+      return 0
+    }
     const rust = action && (["jobs", "builds", "recover"].includes(action) ||
       ["start", "cancel"].includes(action) && managed(args.join(" ").trim()))
     const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === "rustrover") : await endpoint()

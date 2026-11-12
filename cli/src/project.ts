@@ -119,7 +119,7 @@ export function browser(
   const target = attach ? address(attach) : undefined
   const type = target
     ? `type="ChromiumRemoteDebugType" host="${xml(target.hostname.replace(/^\[|\]$/g, ""))}" port="${target.port}"`
-    : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="false"`
+    : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="false" useTemporaryUserDataDir="true"`
   const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="Veritly Browser" ${type}>${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
   return save(file, text)
 }
