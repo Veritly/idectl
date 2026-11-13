@@ -38,6 +38,18 @@ export function context(name: string) {
   return { project: scope(root, components[key]).project, state }
 }
 
+export async function browser(name: string) {
+  const state = context(name).state
+  if (!state || state.phase !== "ready" || !object(state.browser) || typeof state.browser.endpoint !== "string")
+    throw new Error(`Managed browser is not ready; use wait session ${name} --json, or debug up ${name} if no session is active`)
+  if (typeof state.pid !== "number" || typeof state.token !== "string" || stamp(state.pid) !== state.token)
+    throw new Error(`Managed session supervisor exited; use debug down ${name} to clean up`)
+  const debug = debuggerClient({ chosen: "webstorm", project: scope(root, "packages/app").project })
+  const result = await debug.launchedBrowser(await debug.endpoint())
+  if (result.endpoint !== state.browser.endpoint) throw new Error("WebStorm browser does not match the selected managed session")
+  return { ...result, service: name }
+}
+
 export function matching(file: string) {
   const target = path.resolve(root, file)
   const found = Object.entries(components).filter(([, component]) => {

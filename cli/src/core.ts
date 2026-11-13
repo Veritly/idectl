@@ -74,7 +74,7 @@ export function preview(endpoint: string) {
       tool: "preview_open",
       arguments: { debugEndpoint: endpoint, reuseExistingTab: false },
     },
-    hint: "After T3 preview_status, call preview_open with preview.arguments even if status says available:false and tabId:null; that means no preview tab is open yet.",
+    hint: "After T3 preview_status, call preview_open with preview.arguments even if available:false and tabId:null; then use preview_snapshot on the returned tab and arm breakpoints before triggering the UI action.",
   }
 }
 

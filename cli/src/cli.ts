@@ -9,7 +9,7 @@ import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
-import { up as sessionUp, down as sessionDown, wait as sessionWait, context as sessionContext, matching as sessionMatching } from "./session"
+import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
 
 const args = process.argv.slice(2)
@@ -98,6 +98,7 @@ veritly-ide test browser --project PATH --url URL
 Use --service NAME for a Rust service's project and debugger, --project PATH to select its recorded IDE, --session ID for a specific session, and --frame N for a stack frame. Rust breakpoint files select RustRover automatically.
 At a frontend pause, select the browser session and inspect variables before resuming; raw MCP tool names use underscores.
 Attach managed browsers with T3 preview_status then preview_open using preview.arguments; available:false with tabId:null means open the preview, not an attachment failure.
+Use debug browser --service NAME to retrieve that managed session's verified browser attachment recipe.
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 JetBrains tools are listed by name; use schema for details and --full for unbounded output.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
@@ -281,6 +282,11 @@ async function main() {
       const name = args.shift()
       if (!name || args.length) throw new Error(`debug ${action} requires one service name`)
       print(action === "up" ? sessionUp(name) : sessionDown(name))
+      return 0
+    }
+    if (action === "browser" && scope) {
+      if (args.length || explicit || selected || explicitSession) throw new Error("A managed browser is selected by --service NAME; omit positional arguments, --ide, --project and --session")
+      print(await sessionBrowser(scope))
       return 0
     }
     const rust = action && ["start", "cancel", "recover"].includes(action) && managed(args.join(" ").trim())
