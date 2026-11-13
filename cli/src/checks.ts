@@ -19,7 +19,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error("--timeout must be between 0 and 60 seconds")
     const until = Date.now() + seconds * 1000
     while (true) {
-      const ide = (await endpoints()).find((item) => item.id === "webstorm")
+      const ide = (await endpoints("webstorm")).find((item) => item.id === "webstorm")
       if (!ide) return { ok: false, phase: "missing", service: "frontend", reason: "WebStorm is not running" }
       const data = await tool(ide, "list_debug_sessions")
       const sessions = rows(data, "sessions").filter((item) => item.runConfigurationName === "Veritly Frontend" && ["running", "paused"].includes(String(item.state)))
@@ -82,7 +82,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (cfg.ide !== "webstorm") throw new Error("ready currently checks a WebStorm browser project")
     if (!url) throw new Error("ready requires --url with the application URL")
     new URL(url)
-    const active = await attempt(() => endpoints())
+    const active = await attempt(() => endpoints("webstorm"))
     const ide = active.ok ? active.value.find((item) => item.id === "webstorm") : undefined
     const [runs, live, web, http] = await Promise.all([
       ide ? attempt(() => tool(ide, "list_run_configurations", { project_path: cfg.project })) : undefined,

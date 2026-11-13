@@ -60,7 +60,7 @@ export function debuggerClient(opts: Options) {
     throw new Error("WebStorm has no listening debug browser; start its JavaScript debug configuration first")
   }
 
-  async function endpoints() {
+  async function endpoints(target?: string | number) {
     const live = await sockets()
     const map = new Map(live.filter((row) => identity(row.port, row.process)).map((row) => [row.port, row]))
     ides.forEach((ide) => {
@@ -72,7 +72,12 @@ export function debuggerClient(opts: Options) {
       if (!map.has(port)) map.set(port, { port })
     }
     const rows = await Promise.all(
-      [...map.values()].map(async (row) => {
+      [...map.values()].filter((row) => {
+        if (target === undefined) return true
+        if (typeof target === "number") return row.port === target
+        const known = identity(row.port, row.process)
+        return known?.id === target || known?.name.toLowerCase() === target.toLowerCase()
+      }).map(async (row) => {
         if (!live.some((item) => item.port === row.port)) {
           if (override && row.port === Number(override))
             throw new Error(`Debugger port ${row.port} is not listening; start the IDE and enable Debugger MCP`)
@@ -87,7 +92,7 @@ export function debuggerClient(opts: Options) {
   }
 
   async function endpoint() {
-    const rows = await endpoints()
+    const rows = await endpoints(override ? Number(override) : chosen)
     if (override) {
       const found = rows.find((row) => row.port === Number(override))
       if (found) return found
