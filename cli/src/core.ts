@@ -73,8 +73,10 @@ export function preview(endpoint: string) {
       before: "preview_status",
       tool: "preview_open",
       arguments: { debugEndpoint: endpoint, reuseExistingTab: false },
+      read: "preview_snapshot",
+      act: "preview_act",
     },
-    hint: "After T3 preview_status, call preview_open with preview.arguments even if available:false and tabId:null; then use preview_snapshot on the returned tab and arm breakpoints before triggering the UI action.",
+    hint: "After T3 preview_status, call preview_open with preview.arguments even if available:false and tabId:null; read preview_snapshot, then click with T3 preview_act using action='click', the returned tabId and locator='aria-ref=<snapshot ref>'; discover preview_act by name if needed.",
   }
 }
 

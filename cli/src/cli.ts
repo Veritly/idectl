@@ -99,6 +99,7 @@ Use --service NAME for a Rust service's project and debugger, --project PATH to 
 At a frontend pause, select the browser session and inspect variables before resuming; raw MCP tool names use underscores.
 Attach managed browsers with T3 preview_status then preview_open using preview.arguments; available:false with tabId:null means open the preview, not an attachment failure.
 Use debug browser --service NAME to retrieve that managed session's verified browser attachment recipe.
+Read the attached tab with T3 preview_snapshot and click its controls with T3 preview_act (action=click, tabId, locator=aria-ref); discover preview_act by name if needed.
 open selects the component's IDE and waits up to 20s; exit 2 means it is still starting. close stops launcher-owned IDEs.
 JetBrains tools are listed by name; use schema for details and --full for unbounded output.
 Native Rust uses RustRover run configurations; discover these with debug configs, then debug start NAME.
