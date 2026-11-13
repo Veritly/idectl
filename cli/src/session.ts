@@ -361,7 +361,7 @@ async function worker(name: string, cleanup: boolean) {
     while (true) {
       if (stopped()) { await clean(); return }
       const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), call(["wait", name, ...rustarg, "--timeout", "3"])])
-      if (front.phase === "missing") throw new Error("Frontend debug session disappeared during startup; inspect the Veritly Frontend run output in WebStorm")
+      if (front.phase === "missing") throw new Error(`Frontend debug session disappeared during startup; inspect ${path.join(root, ".veritly/ide/frontend.log")} for its retained output`)
       if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : "inspect debug jobs"}`)
       if (front.ok && back.ok) break
       const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined
