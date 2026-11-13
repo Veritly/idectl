@@ -259,7 +259,7 @@ async function main() {
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
       const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
-      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action, then inspect the paused session before resuming." } : result)
+      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints (reload the same app page for initial-load requests), then inspect the pause before resuming." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()
@@ -383,7 +383,7 @@ async function main() {
         details && object(result) && result.state === "paused"
           ? await snapshot(ide, index(), args, result)
           : object(result) && result.state !== "paused"
-            ? { ...pause(result), diagnosis: await diagnosis(ide) }
+            ? { ...pause(result), diagnosis: await diagnosis(ide), hint: "Trigger the operation after setting breakpoints (reload the same app page for load requests), then wait again; no pause alone does not prove a binding failure." }
             : pause(result),
       )
     } else if (action === "inspect") {
