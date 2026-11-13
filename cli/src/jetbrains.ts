@@ -230,6 +230,8 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     }
     const reply = await attempt(() => client.call(name, values, seconds * 1000 + (action === "start" ? 2000 : 0)))
     if (!reply.ok) {
+      if (name === "xdebug_get_process_output" && reply.error.includes("SESSION_NOT_FOUND"))
+        throw new Error(`${reply.error} Use jetbrains status with the same IDE/service selector to find the debugger sessionId; lifecycle run IDs from veritly_run_status are not debugger session IDs.`)
       if (action === "start" && reply.error.toLowerCase().includes("timed out")) {
         const live = await runs(client, values.projectPath)
         const found = builds(live).find((item) => item.name === values.configurationName)
