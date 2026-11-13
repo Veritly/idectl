@@ -27,6 +27,35 @@ class CargoState {
 @Suppress("FunctionName", "unused")
 class Cargo : McpToolset {
   @McpTool
+  @McpDescription("Read the native IDE stepping-filter decision for the top frame of one paused configuration. Does not resume or step the process.")
+  suspend fun veritly_debug_filter(configuration: String): String {
+    val project = currentCoroutineContext().project
+    val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
+    require(sessions.size == 1) { "Select exactly one active native debug configuration" }
+    val session = sessions.single()
+    require(session.isSuspended) { "Stepping filters require a paused session" }
+    val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
+    val context = session.suspendContext as? com.jetbrains.cidr.execution.debugger.CidrSuspendContext ?: error("Native suspend context is unavailable")
+    val stack = context.currentExecutionStack
+    val frame = stack.topFrame?.frame ?: error("Native top frame is unavailable")
+    val logger = com.jetbrains.cidr.execution.debugger.stepFilters.StepFiltersLogger(process, com.jetbrains.cidr.execution.debugger.stepFilters.StepFiltersDiagnosticsLevel.DISABLED)
+    val rules = com.jetbrains.cidr.execution.debugger.stepFilters.StepFiltersProvider.getAllStepFilters(
+      com.jetbrains.cidr.execution.debugger.stepFilters.StepFiltersProviderContext(project, null, logger)
+    )
+    val manager = com.jetbrains.cidr.execution.debugger.stepFilters.StepFiltersManager(rules, logger, 0)
+    val paths = if (frame.module != null) com.jetbrains.cidr.execution.debugger.modules.CidrDebuggerModulesStorage.getInstance(process).getModulesPathByName(frame.module!!) else emptyList()
+    val module = if (paths.size == 1) paths.single() else frame.module
+    val enabled = com.intellij.openapi.util.registry.Registry.`is`("cidr.debugger.stepFilters") && !session.isMixedMode
+    return Gson().toJson(mapOf(
+      "allowed" to (!enabled || manager.canStepInto(module, frame.file, frame.function)),
+      "enabled" to enabled,
+      "cause" to (stack.suspensionCause != null),
+      "thread" to stack.thread.tid,
+      "location" to mapOf("file" to frame.file, "line" to frame.line + 1, "function" to frame.function)
+    ))
+  }
+
+  @McpTool
   @McpDescription("Execute a native debugger console command in one explicitly named active run configuration. Returns the debugger response.")
   suspend fun veritly_debug_command(configuration: String, command: String): String {
     require(command.isNotBlank()) { "A debugger command is required" }
