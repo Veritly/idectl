@@ -3,11 +3,11 @@
 import lldb
 
 
-def step(debugger, identity, plan):
+def step(debugger, index, plan):
     if plan not in ("Into", "Over", "Out"):
         raise ValueError("Expected Into, Over or Out")
     process = debugger.GetSelectedTarget().GetProcess()
-    thread = process.GetThreadByID(identity)
+    thread = process.GetThreadByIndexID(index)
     if process.GetState() != lldb.eStateStopped or not thread.IsValid():
         raise ValueError("The selected IDE thread is not available in a stopped process")
     result = lldb.SBCommandReturnObject()

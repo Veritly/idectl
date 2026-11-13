@@ -13,7 +13,7 @@ fn add(value: u32) -> u32 {
 #[inline(never)]
 async fn load() -> u32 {
     let value = ready(41).await;
-    add(value) // pause
+    add(std::hint::black_box(value)) // pause
 }
 #[inline(never)]
 async fn wrap() -> u32 {
@@ -61,13 +61,18 @@ def run(debugger, exe, source):
     import veritly_step
     others = [row for row in process if row.GetThreadID() != thread.GetThreadID()]
     assert others, 'fixture needs an unrelated waiting thread'
+    assert thread.GetThreadID() != thread.GetIndexID(), 'fixture must distinguish OS IDs from debugger indexes'
     process.SetSelectedThread(others[0])
-    veritly_step.step(debugger, thread.GetThreadID(), 'Into')
-    assert process.GetSelectedThread().GetThreadID() == thread.GetThreadID()
-    frame = thread.GetFrameAtIndex(0)
-    assert str(frame.GetLineEntry().GetFileSpec()) == source
-    assert frame.GetLineEntry().GetLine() > 0
-    assert 'add' in frame.GetFunctionName()
+    for _ in range(5):
+        veritly_step.step(debugger, thread.GetIndexID(), 'Into')
+        assert process.GetSelectedThread().GetThreadID() == thread.GetThreadID()
+        frame = thread.GetFrameAtIndex(0)
+        assert str(frame.GetLineEntry().GetFileSpec()) == source
+        assert frame.GetLineEntry().GetLine() > 0
+        if 'add' in frame.GetFunctionName():
+            break
+    else:
+        raise AssertionError('step-into skipped the workspace helper after its library argument')
     process.Kill()
 
     process, thread = launch()
