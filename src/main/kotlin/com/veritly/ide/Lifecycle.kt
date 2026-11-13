@@ -86,6 +86,14 @@ class Lifecycle : McpToolset {
   }
 
   @McpTool
+  @McpDescription("Persist the selected project's IDE settings, including breakpoint changes, before restarting the IDE. Does not save source documents.")
+  suspend fun veritly_save_project(): String {
+    val project = currentCoroutineContext().project
+    ApplicationManager.getApplication().invokeAndWait { project.save() }
+    return Gson().toJson(mapOf("saved" to true))
+  }
+
+  @McpTool
   @McpDescription("List IDE run and debug executions observed since the project opened. Each has a unique ID, name, executor, phase and cancellable flag. RustRover may report a build separately as Build `configuration name`.")
   suspend fun veritly_run_status(): String {
     val runs = currentCoroutineContext().project.service<Runs>()
