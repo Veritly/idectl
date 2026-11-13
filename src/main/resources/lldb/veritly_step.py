@@ -20,12 +20,13 @@ class Over:
         if not self.child.IsPlanComplete():
             return False
         frame = self.plan.GetThread().GetFrameAtIndex(0)
-        file = str(frame.GetLineEntry().GetFileSpec()).replace("\\", "/")
+        line = frame.GetLineEntry()
+        file = str(line.GetFileSpec()).replace("\\", "/")
         library = any(part in file for part in (
             "/rustc/", "/stdlib-local-copy/", "/lib/rustlib/src/rust/library/",
             "/registry/src/", "/git/checkouts/",
         ))
-        if library:
+        if frame.IsValid() and (not line.IsValid() or library):
             self.child = self.plan.QueueThreadPlanForStepOut(0)
             return False
         self.plan.SetPlanComplete(True)
