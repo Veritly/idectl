@@ -10,18 +10,13 @@ import com.intellij.openapi.components.Service
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.withTimeout
 import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.CargoProject
 import org.rust.debugger.settings.RsDebuggerSettings
 import com.intellij.xdebugger.XDebuggerManager
-import com.intellij.xdebugger.XDebugSessionListener
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
-import com.jetbrains.cidr.execution.debugger.CidrStackFrame
 import kotlinx.coroutines.future.await
-import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBDriverConfiguration
 
 @Service(Service.Level.PROJECT)
 class CargoState {
@@ -40,57 +35,6 @@ class Cargo : McpToolset {
     require(sessions.size == 1) { "Select exactly one active native debug configuration" }
     val process = sessions.single().debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
     return process.postCommand<String> { driver -> driver.executeInterpreterCommand(-1, -1, command) }.await()
-  }
-
-  @McpTool
-  @McpDescription("Step in an explicitly named suspended Rust LLDB configuration, skipping dependency and synthetic source frames. Breakpoints and exceptions still interrupt the step.")
-  suspend fun veritly_debug_step(configuration: String, action: String): String {
-    val plan = when (action) {
-      "step_over" -> "Over"
-      "step_out" -> "Out"
-      "step_into" -> "Into"
-      else -> error("Expected step_over, step_out or step_into")
-    }
-    val project = currentCoroutineContext().project
-    val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
-    require(sessions.size == 1) { "Select exactly one active native debug configuration" }
-    val session = sessions.single()
-    require(session.isSuspended) { "Stepping requires a paused session" }
-    require(session.suspendContext != null) { "The IDE has no current suspension" }
-    val frame = session.currentStackFrame as? CidrStackFrame ?: error("Select a native stack frame before stepping")
-    val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
-    require(process.runParameters.debuggerDriverConfiguration is LLDBDriverConfiguration) { "Workspace stepping requires LLDB" }
-    val resumed = CompletableDeferred<Unit>()
-    val listener = object : XDebugSessionListener {
-      override fun sessionResumed() { resumed.complete(Unit) }
-      override fun sessionStopped() { resumed.completeExceptionally(IllegalStateException("Debug session stopped before stepping")) }
-    }
-    session.addSessionListener(listener)
-    try {
-      val output = process.postCommand<String> { driver ->
-        driver.executeInterpreterCommand(frame.threadId, 0, "script veritly_step.step(lldb.debugger, ${frame.threadId}, '$plan')")
-      }.await()
-      require(output.isBlank()) { output }
-      withTimeout(3000) { resumed.await() }
-    } finally {
-      session.removeSessionListener(listener)
-    }
-    return Gson().toJson(mapOf("action" to action, "status" to "started", "thread" to frame.threadId))
-  }
-
-  @McpTool
-  @McpDescription("Cancel Veritly-owned pending native step plans before continuing the selected paused configuration. Does not remove breakpoints or resume execution.")
-  suspend fun veritly_debug_cancel_step(configuration: String): String {
-    val project = currentCoroutineContext().project
-    val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
-    require(sessions.size == 1) { "Select exactly one active native debug configuration" }
-    val session = sessions.single()
-    require(session.isSuspended) { "Continuing requires a paused session" }
-    val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
-    process.postCommand<String> { driver ->
-      driver.executeInterpreterCommand(-1, -1, "script veritly_step.finish(lldb.debugger)")
-    }.await()
-    return Gson().toJson(mapOf("cancelled" to true))
   }
 
   @McpTool

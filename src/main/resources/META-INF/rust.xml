@@ -2,8 +2,4 @@
   <extensions defaultExtensionNs="com.intellij">
     <mcpServer.mcpToolset implementation="com.veritly.ide.Cargo"/>
   </extensions>
-  <extensions defaultExtensionNs="cidr.debugger">
-    <stepFilters.provider implementation="com.veritly.ide.Stepping"/>
-    <debugProcessConfigurator implementation="com.veritly.ide.Stepping"/>
-  </extensions>
 </idea-plugin>
