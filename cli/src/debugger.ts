@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { native } from "./jetbrains"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection, stamp } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
@@ -12,16 +12,22 @@ export function debuggerClient(opts: Options) {
   const override = opts.override
   const session = opts.session
   const project = opts.project
-  async function launchedBrowser(ide: Endpoint) {
+  async function browserProcesses(ide: Endpoint) {
+    if (ide.id !== "webstorm" || !ide.pid) throw new Error("Browser discovery requires a verified WebStorm process")
+    return browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), ide.pid)
+  }
+
+  async function launchedBrowser(ide: Endpoint, opts: { endpoint?: string; prior?: number[] } = {}) {
     if (process.platform !== "linux") throw new Error("IDE browser discovery is supported on Linux VMs")
     if (ide.id !== "webstorm") throw new Error("Browser attachment requires --ide webstorm; a managed service's wait result already includes preview.arguments")
     if (!ide.pid) throw new Error("A verified WebStorm process is required; open packages/app --ide webstorm first")
     const dir = project ? path.resolve(project) : opened(ide)
     const file = dir ? record(dir) : undefined
     const state: unknown = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined
-    if (object(state) && typeof state.endpoint === "string") {
-      if (state.closed !== false || state.ide !== ide.id || state.bridge !== ide.pid) throw new Error("Recorded browser belongs to a different IDE project")
-      const target = new URL(state.endpoint)
+    const endpoint = opts.endpoint || (opts.prior === undefined && object(state) && typeof state.endpoint === "string" ? state.endpoint : undefined)
+    if (endpoint) {
+      if (!opts.endpoint && (!object(state) || state.closed !== false || state.ide !== ide.id || state.bridge !== ide.pid)) throw new Error("Recorded browser belongs to a different IDE project")
+      const target = new URL(endpoint)
       if (target.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) || !target.port) throw new Error("Recorded browser endpoint is invalid")
       const socket = (await sockets()).find((item) => item.port === Number(target.port))
       if (!socket?.pid) throw new Error("Recorded browser is not listening")
@@ -33,10 +39,12 @@ export function debuggerClient(opts: Options) {
       const data: unknown = await response.json()
       if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
         throw new Error("The browser listener is not a Chromium debugging endpoint")
-      return { ok: true, pid: socket.pid, endpoint: target.origin, ...preview(target.origin) }
+      const token = stamp(socket.pid)
+      if (!token) throw new Error("Cannot identify the browser process")
+      return { ok: true, pid: socket.pid, token, endpoint: target.origin, ...preview(target.origin) }
     }
     for (let count = 0; count < 30; count++) {
-      const rows = browsers(await command(["ps", "-eo", "pid=,ppid=,args="], root, 1000), ide.pid)
+      const rows = (await browserProcesses(ide)).filter((row) => !opts.prior?.includes(row.pid))
       const live = await sockets()
       const found = rows.flatMap((row) => {
         const file = path.join(row.profile, "DevToolsActivePort")
@@ -46,14 +54,16 @@ export function debuggerClient(opts: Options) {
         if (!live.some((socket) => socket.pid === row.pid && socket.port === port)) return []
         return [{ pid: row.pid, endpoint: `http://127.0.0.1:${port}` }]
       })
-      if (found.length > 1) throw new Error("WebStorm has multiple debug browsers; stop the other debug sessions first")
+      if (found.length > 1) throw new Error(`WebStorm has multiple debug browsers: ${JSON.stringify(found)}; select the managed browser with debug browser --service NAME, or inspect debug sessions --ide webstorm --project ${dir}`)
       if (found.length === 1) {
         const result = await fetch(`${found[0].endpoint}/json/version`, { signal: AbortSignal.timeout(3000) })
         if (!result.ok) throw new Error(`Browser debug endpoint returned HTTP ${result.status}`)
         const data: unknown = await result.json()
         if (!object(data) || typeof data.Browser !== "string" || typeof data.webSocketDebuggerUrl !== "string")
           throw new Error("The browser listener is not a Chromium debugging endpoint")
-        return { ok: true, ...found[0], ...preview(found[0].endpoint) }
+        const token = stamp(found[0].pid)
+        if (!token) throw new Error("Cannot identify the browser process")
+        return { ok: true, ...found[0], token, ...preview(found[0].endpoint) }
       }
       await Bun.sleep(150)
     }
@@ -221,5 +231,5 @@ export function debuggerClient(opts: Options) {
   }
 
 
-  return { launchedBrowser, endpoints, endpoint, tool, configs, config, sessions, launch }
+  return { launchedBrowser, browserProcesses, endpoints, endpoint, tool, configs, config, sessions, launch }
 }

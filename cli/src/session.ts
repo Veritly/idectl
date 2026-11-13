@@ -6,6 +6,7 @@ import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service } from "./job"
 import { vars, routing, frontendRoute, routeStatus } from "./service"
 import { login } from "./auth"
+import { close as closeBrowser } from "./browser"
 
 const components: Record<string, string> = {
   data: "packages/veritly-data/runtime",
@@ -45,8 +46,8 @@ export async function browser(name: string) {
   if (typeof state.pid !== "number" || typeof state.token !== "string" || stamp(state.pid) !== state.token)
     throw new Error(`Managed session supervisor exited; use debug down ${name} to clean up`)
   const debug = debuggerClient({ chosen: "webstorm", project: scope(root, "packages/app").project })
-  const result = await debug.launchedBrowser(await debug.endpoint())
-  if (result.endpoint !== state.browser.endpoint) throw new Error("WebStorm browser does not match the selected managed session")
+  const result = await debug.launchedBrowser(await debug.endpoint(), { endpoint: state.browser.endpoint })
+  if (result.pid !== state.browser.pid || result.token !== state.browser.token) throw new Error("WebStorm browser does not match the selected managed session")
   return { ...result, service: name, ...selector(state) }
 }
 
@@ -196,7 +197,11 @@ async function worker(name: string, cleanup: boolean) {
     const all = await sessions()
     const before = all.filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)))
     if (before.length > 1) throw new Error(`Multiple ${cfg} sessions are active`)
-    if (before.length === 1) { state[key] = { id: field(before[0], ["id", "sessionId"]), owned: false }; return }
+    if (before.length === 1) {
+      const browser = key === "browser" ? await debug.launchedBrowser(await debug.endpoint()) : undefined
+      state[key] = { id: field(before[0], ["id", "sessionId"]), owned: false, ...(browser ? { endpoint: browser.endpoint, pid: browser.pid, token: browser.token } : {}) }
+      return
+    }
     const prior = all.map((item) => field(item, ["id", "sessionId"])).filter(Boolean)
     update(`starting ${key}`, { [key]: { owned: true, phase: "starting", prior } })
     const result = await call(["debug", "start", cfg, ...webarg]).catch(async (err: unknown) => {
@@ -210,7 +215,7 @@ async function worker(name: string, cleanup: boolean) {
     const session = object(result.session) ? result.session : undefined
     const id = session ? field(session, ["id", "sessionId"]) : undefined
     if (!id) throw new Error(`${cfg} started without an identifiable session; inspect WebStorm before cleanup`)
-    state[key] = { id, owned: true }
+    state[key] = { id, owned: true, ...(key === "browser" && object(result.browser) ? { endpoint: result.browser.endpoint, pid: result.browser.pid, token: result.browser.token } : {}) }
     save(folder, state)
   }
   async function stopWeb(key: string) {
@@ -230,6 +235,11 @@ async function worker(name: string, cleanup: boolean) {
       state[key] = undefined
       save(folder, state)
       return
+    }
+    if (key === "browser") {
+      if (typeof item.endpoint !== "string" || typeof item.pid !== "number" || typeof item.token !== "string")
+        throw new Error("Owned browser has no process identity; inspect WebStorm browser sessions before cleanup")
+      await closeBrowser(item.endpoint, item.pid, item.token)
     }
     const found = (await sessions()).find((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state)))
     if (found) {
@@ -377,7 +387,8 @@ async function worker(name: string, cleanup: boolean) {
     if (stopped()) { await clean(); return }
     await startWeb("Veritly Browser", "browser")
     const ide = await debug.endpoint()
-    const browser = await debug.launchedBrowser(ide)
+    if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Browser launch did not report its endpoint")
+    const browser = await debug.launchedBrowser(ide, { endpoint: state.browser.endpoint })
     update("authenticating browser")
     await login(browser.endpoint, url)
     update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "pending" })

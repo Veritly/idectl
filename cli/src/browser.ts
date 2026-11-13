@@ -1,3 +1,5 @@
+import { sockets, stamp } from "./core"
+
 type Json = Record<string, unknown>
 
 function object(value: unknown): value is Json {
@@ -125,4 +127,43 @@ export async function reload(endpoint: string, url: string) {
       else resolve()
     })
   })
+}
+
+export async function close(endpoint: string, pid: number, token: string) {
+  if (stamp(pid) !== token) return
+  const base = new URL(endpoint)
+  if (base.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) || !base.port)
+    throw new Error("Browser endpoint must be a verified loopback listener")
+  const live = await sockets()
+  if (stamp(pid) !== token) return
+  if (!live.some((row) => row.port === Number(base.port) && row.pid === pid))
+    throw new Error("Owned browser listener changed; it was preserved")
+  const response = await fetch(new URL("/json/version", base), { signal: AbortSignal.timeout(3000) })
+  if (!response.ok) throw new Error(`Browser version returned HTTP ${response.status}`)
+  const data: unknown = await response.json()
+  if (!object(data) || typeof data.webSocketDebuggerUrl !== "string") throw new Error("Browser has no debugging endpoint")
+  const target = new URL(data.webSocketDebuggerUrl)
+  if (target.protocol !== "ws:" || target.hostname !== base.hostname || target.port !== base.port)
+    throw new Error("Browser debugging endpoint does not match its owned listener")
+  if (stamp(pid) !== token) return
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(target.href)
+    const state = { sent: false }
+    const finish = (err?: Error) => { clearTimeout(timer); ws.close(); if (err) reject(err); else resolve() }
+    const timer = setTimeout(() => finish(new Error("Browser close timed out")), 3000)
+    ws.addEventListener("open", () => {
+      state.sent = true
+      ws.send(JSON.stringify({ id: 1, method: "Browser.close" }))
+    }, { once: true })
+    ws.addEventListener("error", () => finish(new Error("Browser close connection failed")), { once: true })
+    ws.addEventListener("close", () => finish(state.sent ? undefined : new Error("Browser close disconnected before sending")), { once: true })
+    ws.addEventListener("message", (event) => {
+      if (typeof event.data !== "string") return
+      const row: unknown = JSON.parse(event.data)
+      if (object(row) && row.id === 1) finish(row.error ? new Error("Browser rejected close") : undefined)
+    })
+  })
+  const until = Date.now() + 5000
+  while (stamp(pid) === token && Date.now() < until) await Bun.sleep(100)
+  if (stamp(pid) === token) throw new Error("Owned browser is still stopping; retry debug down")
 }

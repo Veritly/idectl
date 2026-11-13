@@ -451,9 +451,10 @@ async function main() {
       const name = value === "frontend" ? "Veritly Frontend" : value === "browser" ? "Veritly Browser" : value
       if (!name) throw new Error("debug start requires a configuration name")
       const cfg = await config(ide, name)
+      const prior = ide.id === "webstorm" && cfg.typeId === "JavascriptDebugType" ? (await debug.browserProcesses(ide)).map((row) => row.pid) : undefined
       const result = await launch(ide, name)
       if (ide.id === "webstorm" && cfg.typeId === "JavascriptDebugType") {
-        const browser = await launchedBrowser(ide)
+        const browser = await launchedBrowser(ide, { prior })
         print({ ...(object(result) ? result : { result }), browser })
       } else print(result)
     } else if (action === "run") {

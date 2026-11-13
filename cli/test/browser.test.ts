@@ -2,8 +2,9 @@ import { expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { errors, inspect, mounted, tab } from "../src/browser"
+import { close, errors, inspect, mounted, tab } from "../src/browser"
 import { inject } from "../src/auth"
+import { stamp } from "../src/core"
 
 test("groups repeated errors without exposing their text or URLs", () => {
   const result = errors([
@@ -61,13 +62,19 @@ test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after
       if (next.page.mount === "complete") {
         expect(mounted(next.page)).toBe(true)
         expect(next.page.elements).toBe(1)
+        const token = stamp(proc.pid)
+        if (!token) throw new Error("Browser process disappeared")
+        await close(endpoint, proc.pid, `${token}-different`)
+        expect(stamp(proc.pid)).toBe(token)
+        await close(endpoint, proc.pid, token)
+        expect(await proc.exited).toBe(0)
         return
       }
       await Bun.sleep(50)
     }
     throw new Error("Browser did not report the app mount")
   } finally {
-    proc.kill()
+    if (proc.exitCode === null) proc.kill()
     await proc.exited
     server.stop(true)
     fs.rmSync(dir, { recursive: true, force: true })
