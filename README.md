@@ -3,6 +3,8 @@
 Adds run and debug lifecycle tools to the JetBrains MCP server. The plugin observes IDE executions and can stop an execution when its process handler is available. In RustRover, `veritly_cargo_attach` attaches a Cargo manifest and reports whether its project model is ready.
 
 Cargo attachment enables Rust stepping filters for the standard library and external crates.
+`veritly_debug_step_over` uses an LLDB thread plan to skip dependency frames after async returns while preserving breakpoint and exception stops.
+Run its native regression check with `python3 test/stepping.py IDE_PATH/bin/lldb/linux/x64/bin/lldb` (requires `rustc`).
 `debuggerPatch` builds the pinned Debugger MCP 5.4.0 dependency with corrected collection of automatically expanded frame scope groups; it requires `-PdebuggerPath=PATH_TO_VERIFIED_UPSTREAM_JAR`.
 The collector source under `src/debugger` derives from hechtcarmel/jetbrains-debugger-mcp-plugin revision `411dc38420824a6b59a56d6685285a7b02a0a053`; its license is preserved there.
 

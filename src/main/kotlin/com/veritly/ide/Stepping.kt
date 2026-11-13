@@ -1,5 +1,8 @@
 package com.veritly.ide
 
+import com.intellij.openapi.application.PathManager
+import java.nio.file.Files
+import java.security.MessageDigest
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcessConfigurator
 import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBDriverConfiguration
@@ -14,6 +17,18 @@ class Stepping : StepFiltersProvider, CidrDebugProcessConfigurator {
     // Native IDE filters do not intercept inline steps inside the same machine frame.
     process.postCommand { driver ->
       driver.executeInterpreterCommand(-1, -1, "settings set target.process.thread.step-avoid-regexp ^<?(std|core|alloc)::")
+      driver.executeInterpreterCommand(-1, -1, "command script import \"$script\"")
+    }
+  }
+
+  companion object {
+    private val script by lazy {
+      val bytes = Stepping::class.java.getResourceAsStream("/lldb/veritly_step.py")!!.use { it.readBytes() }
+      val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+      val file = PathManager.getSystemDir().resolve("veritly-ide/lldb/$hash/veritly_step.py")
+      Files.createDirectories(file.parent)
+      Files.write(file, bytes)
+      file
     }
   }
 

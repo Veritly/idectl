@@ -17,6 +17,7 @@ import org.rust.debugger.settings.RsDebuggerSettings
 import com.intellij.xdebugger.XDebuggerManager
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
 import kotlinx.coroutines.future.await
+import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBDriverConfiguration
 
 @Service(Service.Level.PROJECT)
 class CargoState {
@@ -35,6 +36,23 @@ class Cargo : McpToolset {
     require(sessions.size == 1) { "Select exactly one active native debug configuration" }
     val process = sessions.single().debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
     return process.postCommand<String> { driver -> driver.executeInterpreterCommand(-1, -1, command) }.await()
+  }
+
+  @McpTool
+  @McpDescription("Step over the current source line in an explicitly named suspended Rust LLDB configuration, skipping dependency frames after async returns. Breakpoints and exceptions still interrupt the step.")
+  suspend fun veritly_debug_step_over(configuration: String): String {
+    val project = currentCoroutineContext().project
+    val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
+    require(sessions.size == 1) { "Select exactly one active native debug configuration" }
+    val session = sessions.single()
+    require(session.isSuspended) { "Step-over requires a paused session" }
+    val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
+    require(process.runParameters.debuggerDriverConfiguration is LLDBDriverConfiguration) { "Workspace stepping requires LLDB" }
+    val output = process.postCommand<String> { driver ->
+      driver.executeInterpreterCommand(-1, -1, "thread step-scripted -C veritly_step.Over -m all-threads")
+    }.await()
+    require(output.isBlank()) { output }
+    return Gson().toJson(mapOf("action" to "step_over", "status" to "started"))
   }
 
   @McpTool
