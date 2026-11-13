@@ -1,6 +1,7 @@
 package com.veritly.ide
 
 import com.google.gson.Gson
+import com.intellij.configurationStore.saveSettings
 import com.intellij.execution.ExecutionListener
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.runners.ExecutionEnvironment
@@ -89,7 +90,7 @@ class Lifecycle : McpToolset {
   @McpDescription("Persist the selected project's IDE settings, including breakpoint changes, before restarting the IDE. Does not save source documents.")
   suspend fun veritly_save_project(): String {
     val project = currentCoroutineContext().project
-    ApplicationManager.getApplication().invokeAndWait { project.save() }
+    check(saveSettings(project, forceSavingAllSettings = true)) { "Could not persist project settings" }
     return Gson().toJson(mapOf("saved" to true))
   }
 
