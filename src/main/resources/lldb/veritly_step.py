@@ -3,10 +3,22 @@
 import lldb
 
 plans = []
+filters = {}
+
+
+def restore(process):
+    saved = filters.pop(process.GetUniqueID(), None)
+    if saved is None:
+        return
+    debugger, value = saved
+    error = debugger.SetInternalVariable('target.process.thread.step-avoid-regexp', value, debugger.GetInstanceName())
+    if not error.Success():
+        raise RuntimeError(str(error))
 
 
 def finish(debugger):
     process = debugger.GetSelectedTarget().GetProcess()
+    restore(process)
     active = [plan for plan in plans if plan.IsValid()
               and plan.GetThread().GetProcess().GetUniqueID() == process.GetUniqueID()]
     indexes = {plan.GetThread().GetIndexID() for plan in active}
@@ -31,11 +43,22 @@ def step(debugger, index, plan):
     if process.GetState() != lldb.eStateStopped or not thread.IsValid():
         raise ValueError("The selected IDE thread is not available in a stopped process")
     finish(debugger)
+    if plan == 'Into':
+        value = debugger.GetInternalVariableValue('target.process.thread.step-avoid-regexp', debugger.GetInstanceName()).GetStringAtIndex(0)
+        if value is None:
+            raise RuntimeError('The native debugger has no stepping filter setting')
+        filters[process.GetUniqueID()] = (debugger, value)
+        error = debugger.SetInternalVariable('target.process.thread.step-avoid-regexp', '^$', debugger.GetInstanceName())
+        if not error.Success():
+            restore(process)
+            raise RuntimeError(str(error))
     result = lldb.SBCommandReturnObject()
     debugger.GetCommandInterpreter().HandleCommand(
-        f"thread step-scripted -C veritly_step.{plan} -m all-threads {thread.GetIndexID()}", result
+        f"thread step-scripted -C veritly_step.{plan} -m all-threads {thread.GetIndexID()}",
+        lldb.SBExecutionContext(thread), result,
     )
     if not result.Succeeded():
+        restore(process)
         raise RuntimeError(result.GetError())
 
 
@@ -77,6 +100,7 @@ class Over:
         ):
             # Preserve the user's stop, but do not resume an interrupted step later.
             self.plan.SetPlanComplete(True)
+            restore(self.plan.GetThread().GetProcess())
             return False
         return self.child.IsPlanComplete()
 
@@ -90,6 +114,14 @@ class Over:
             "/rustc/", "/stdlib-local-copy/", "/lib/rustlib/src/rust/library/",
             "/registry/src/", "/git/checkouts/",
         ))
+        bridge = self.enter and any(part in str(frame.GetFunctionName()) for part in (
+            '::poll', 'core::future::', 'core::pin::',
+        ))
+        if frame.IsValid() and library and bridge:
+            start = line.GetStartAddress()
+            size = line.GetEndAddress().GetFileAddress() - start.GetFileAddress()
+            self.child = self.queue(start, size) if line.IsValid() and line.GetLine() > 0 and size > 0 else self.advance()
+            return False
         if frame.IsValid() and (not line.IsValid() or library):
             self.child = self.plan.QueueThreadPlanForStepOut(0)
             return False
@@ -97,6 +129,7 @@ class Over:
             self.child = self.advance()
             return False
         self.plan.SetPlanComplete(True)
+        restore(self.plan.GetThread().GetProcess())
         return True
 
     def should_step(self):

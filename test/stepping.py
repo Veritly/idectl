@@ -32,12 +32,14 @@ fn main() {
 '''
 
 
-def run(debugger, exe, source):
+def run(debugger, exe, source, nested=False):
     import lldb
 
     debugger.SetAsync(False)
     target = debugger.CreateTarget(exe)
-    pause = target.BreakpointCreateByLocation(source, next(i for i, line in enumerate(SOURCE.splitlines(), 1) if "// pause" in line))
+    debugger.SetSelectedTarget(target)
+    lines = pathlib.Path(source).read_text().splitlines()
+    pause = target.BreakpointCreateByLocation(source, next(i for i, line in enumerate(lines, 1) if "// pause" in line))
     assert pause.GetNumLocations() > 0
 
     def launch():
@@ -46,6 +48,29 @@ def run(debugger, exe, source):
         thread = process.GetSelectedThread()
         assert thread.GetStopReason() == lldb.eStopReasonBreakpoint
         return process, thread
+
+    if nested:
+        import veritly_step
+        setting = 'target.process.thread.step-avoid-regexp'
+        original = debugger.GetInternalVariableValue(setting, debugger.GetInstanceName()).GetStringAtIndex(0)
+        process, thread = launch()
+        body = next(i for i, line in enumerate(lines, 1) if '// body' in line)
+        for _ in range(12):
+            veritly_step.step(debugger, thread.GetIndexID(), 'Into')
+            frame = thread.GetFrameAtIndex(0)
+            assert str(frame.GetLineEntry().GetFileSpec()) == source
+            assert frame.GetLineEntry().GetLine() > 0
+            assert debugger.GetInternalVariableValue(setting, debugger.GetInstanceName()).GetStringAtIndex(0) == original
+            if 'fetch' in frame.GetFunctionName() and frame.GetLineEntry().GetLine() == body:
+                break
+        else:
+            raise AssertionError('step-into skipped the workspace future behind a library poll adapter')
+        veritly_step.finish(debugger)
+        process.Continue()
+        assert process.GetState() == lldb.eStateExited
+        assert not veritly_step.filters
+        print('PASS: step-into follows a boxed workspace future through library poll adapters')
+        return
 
     process, thread = launch()
     library = False
@@ -114,7 +139,7 @@ def run(debugger, exe, source):
     assert 'wrap' in thread.GetFrameAtIndex(0).GetFunctionName()
     process.Kill()
 
-    interrupt = target.BreakpointCreateByLocation(source, next(i for i, line in enumerate(SOURCE.splitlines(), 1) if "// interrupt" in line))
+    interrupt = target.BreakpointCreateByLocation(source, next(i for i, line in enumerate(lines, 1) if "// interrupt" in line))
     assert interrupt.GetNumLocations() > 0
     process, thread = launch()
     pause.SetEnabled(False)
@@ -144,13 +169,24 @@ if __name__ == '__main__':
         source.write_text(SOURCE)
         exe = pathlib.Path(folder) / 'fixture'
         subprocess.run(['rustc', '--edition=2024', '-g', str(source), '-o', str(exe)], check=True)
+        nested = pathlib.Path(folder) / 'nested.rs'
+        nested.write_text(SOURCE.replace(
+            '#[inline(never)]\nasync fn load()',
+            '#[inline(never)]\nasync fn fetch(value: u32) -> u32 {\n    add(value) // body\n}\n#[inline(never)]\nasync fn load()',
+        ).replace(
+            '    add(std::hint::black_box(value)) // pause',
+            '    let future: Pin<Box<dyn Future<Output = u32>>> = Box::pin(fetch(value));\n    future.await // pause',
+        ))
+        binary = pathlib.Path(folder) / 'nested'
+        subprocess.run(['rustc', '--edition=2024', '-g', str(nested), '-o', str(binary)], check=True)
         result = subprocess.run([
             sys.argv[1], '--batch',
             '-o', f'command script import "{root}/src/main/resources/lldb/veritly_step.py"',
             '-o', f'command script import "{pathlib.Path(__file__).resolve()}"',
             '-o', f'script stepping.run(lldb.debugger, {str(exe)!r}, {str(source)!r})',
+            '-o', f'script stepping.run(lldb.debugger, {str(binary)!r}, {str(nested)!r}, True)',
         ], capture_output=True, text=True, timeout=10)
         print(result.stdout)
         print(result.stderr, file=sys.stderr)
-        if result.returncode or 'PASS: async dependency frames skipped' not in result.stdout:
+        if result.returncode or 'PASS: async dependency frames skipped' not in result.stdout or 'PASS: step-into follows' not in result.stdout:
             sys.exit(1)

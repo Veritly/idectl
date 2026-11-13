@@ -10,13 +10,14 @@ import com.intellij.openapi.components.Service
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
 import org.rust.cargo.project.model.CargoProjectsService
 import org.rust.cargo.project.model.CargoProject
 import org.rust.debugger.settings.RsDebuggerSettings
 import com.intellij.xdebugger.XDebuggerManager
+import com.intellij.xdebugger.XDebugSessionListener
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
 import com.jetbrains.cidr.execution.debugger.CidrStackFrame
 import kotlinx.coroutines.future.await
@@ -55,16 +56,24 @@ class Cargo : McpToolset {
     require(sessions.size == 1) { "Select exactly one active native debug configuration" }
     val session = sessions.single()
     require(session.isSuspended) { "Stepping requires a paused session" }
-    val context = session.suspendContext ?: error("The IDE has no current suspension")
+    require(session.suspendContext != null) { "The IDE has no current suspension" }
     val frame = session.currentStackFrame as? CidrStackFrame ?: error("Select a native stack frame before stepping")
     val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
     require(process.runParameters.debuggerDriverConfiguration is LLDBDriverConfiguration) { "Workspace stepping requires LLDB" }
-    val output = process.postCommand<String> { driver ->
-      driver.executeInterpreterCommand(frame.threadId, 0, "script veritly_step.step(lldb.debugger, ${frame.threadId}, '$plan')")
-    }.await()
-    require(output.isBlank()) { output }
-    withTimeout(3000) {
-      while (session.isSuspended && session.suspendContext === context) delay(10)
+    val resumed = CompletableDeferred<Unit>()
+    val listener = object : XDebugSessionListener {
+      override fun sessionResumed() { resumed.complete(Unit) }
+      override fun sessionStopped() { resumed.completeExceptionally(IllegalStateException("Debug session stopped before stepping")) }
+    }
+    session.addSessionListener(listener)
+    try {
+      val output = process.postCommand<String> { driver ->
+        driver.executeInterpreterCommand(frame.threadId, 0, "script veritly_step.step(lldb.debugger, ${frame.threadId}, '$plan')")
+      }.await()
+      require(output.isBlank()) { output }
+      withTimeout(3000) { resumed.await() }
+    } finally {
+      session.removeSessionListener(listener)
     }
     return Gson().toJson(mapOf("action" to action, "status" to "started", "thread" to frame.threadId))
   }
