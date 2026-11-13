@@ -112,7 +112,7 @@ export function up(name: string) {
     }
     fs.mkdirSync(folder, { mode: 0o700 })
     const created = Date.now()
-    save(folder, { root, service: name, phase: "queued", cleanup: "pending", created })
+    save(folder, { root, service: name, phase: "queued", cleanup: "not_requested", created })
     const log = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
     const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "worker", name], { cwd: root, stdin: "ignore", stdout: log, stderr: log })
     fs.closeSync(log)
@@ -128,14 +128,14 @@ export function down(name: string) {
   if (state.cleanup === "complete") return { ok: true, service: name, phase: state.phase }
   fs.writeFileSync(path.join(folder, "stop"), "", { mode: 0o600 })
   if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created < 10000)
-    return { ok: true, service: name, phase: "stopping", created: state.created, wait: `wait session ${name} --until stopped` }
+    return { ok: true, service: name, phase: "stopping", cleanup: "requested", created: state.created, wait: `wait session ${name} --until stopped` }
   if (typeof state.pid !== "number" || typeof state.token !== "string" || stamp(state.pid) !== state.token) {
     const log = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
     const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "cleanup", name], { cwd: root, stdin: "ignore", stdout: log, stderr: log })
     fs.closeSync(log)
     proc.unref()
   }
-  return { ok: true, service: name, phase: "stopping", created: state.created, wait: `wait session ${name} --until stopped` }
+  return { ok: true, service: name, phase: "stopping", cleanup: "requested", created: state.created, wait: `wait session ${name} --until stopped` }
 }
 
 export async function wait(name: string, seconds: number, goal = "ready") {
@@ -146,6 +146,8 @@ export async function wait(name: string, seconds: number, goal = "ready") {
   while (true) {
     if (!fs.existsSync(folder)) return { ok: false, service: name, phase: "missing" }
     const state = read(folder)
+    if (fs.existsSync(path.join(folder, "stop")) && !["failed", "stopped"].includes(String(state.phase)))
+      Object.assign(state, { phase: "stopping", cleanup: state.cleanup === "running" ? "running" : "requested" })
     if (state.phase === "failed") return { ok: false, ...state, hint: state.cleanup === "complete" ? "Cleanup completed; inspect the error before starting again." : `Run debug down ${name}, then wait session ${name} --until stopped to complete cleanup.` }
     if (state.phase === "stopped") return { ok: goal === "stopped" && state.cleanup === "complete", ...state, hint: state.cleanup === "complete" ? "Cleanup completed." : `Run debug down ${name} to complete cleanup.` }
     if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) !== state.token)
@@ -153,9 +155,10 @@ export async function wait(name: string, seconds: number, goal = "ready") {
     if (state.phase === "queued" && typeof state.created === "number" && Date.now() - state.created > 10000)
       return { ok: false, ...state, phase: "unknown", error: "Session supervisor did not start; use debug down to clean up" }
     if (state.phase === "paused" && goal === "ready") return { ok: false, ...state, hint: "Inspect the paused session or resume it to continue startup." }
+    if (state.phase === "stopping" && goal === "ready") return { ok: false, ...state, hint: `Cleanup was requested; wait session ${name} --until stopped before starting another session.` }
     if (state.phase === "ready" && goal === "ready") {
       if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Ready session has no browser endpoint")
-      return { ok: true, ...state, browser: { ...state.browser, ...selector(state) }, ...preview(state.browser.endpoint) }
+      return { ok: true, ...state, browser: { ...state.browser, ...selector(state) }, ...preview(state.browser.endpoint), next: "Set breakpoints and trigger the app action; Telepresence keeps cluster pods running while routing intercepted traffic to the IDE process. Run debug down only when finished." }
     }
     if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase, hint: goal === "stopped" ? `Run wait session ${name} --until stopped again; cleanup is still progressing.` : `Run wait session ${name} again; the existing launch is still progressing.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
@@ -258,7 +261,7 @@ async function worker(name: string, cleanup: boolean) {
     save(folder, state)
   }
   async function clean() {
-    update("stopping")
+    update("stopping", { cleanup: "running" })
     const errors: string[] = []
     const attempt = async (run: () => Promise<void>) => {
       try { await run() } catch (err) { errors.push(err instanceof Error ? err.message : String(err)) }
@@ -391,7 +394,7 @@ async function worker(name: string, cleanup: boolean) {
     const browser = await debug.launchedBrowser(ide, { endpoint: state.browser.endpoint })
     update("authenticating browser")
     await login(browser.endpoint, url)
-    update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "pending" })
+    update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "not_requested" })
     while (!stopped()) {
       await Bun.sleep(3000)
       if (stopped()) break
