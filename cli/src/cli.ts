@@ -279,7 +279,7 @@ async function main() {
         opts.condition = condition
       }
       const result = await tool(ide, "set_breakpoint", { ...opts, ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
-      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints (reload the same app page for initial-load requests), then inspect the pause before resuming." } : result)
+      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints; adding a breakpoint while paused does not advance execution, so resume or step to it and inspect the next pause before judging the request." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()
@@ -385,6 +385,19 @@ async function main() {
           ? "Inspect this frame, step again, or resume; the application remains paused."
           : "The step is still running; check debug status before issuing another step.",
       } : waited)
+    } else if (action === "resume") {
+      const result = await tool(ide, map.resume, await input(args), 30_000)
+      const status = await attempt(() => tool(ide, "get_debug_session_status", {
+        session_id: object(result) ? result.sessionId : undefined,
+        include_variables: false, include_source_context: false, max_stack_frames: 1,
+      }))
+      print({
+        ...(object(result) ? result : { result }),
+        observation: status.ok ? pause(status.value) : status,
+        hint: status.ok && object(status.value) && status.value.state === "paused"
+          ? "Execution paused again; inspect this location and its values before resuming the same request."
+          : "Resume was accepted; check both backend and browser debugger status before judging the request, since another breakpoint can pause it again.",
+      })
     } else if (action && map[action])
       print(
         await tool(

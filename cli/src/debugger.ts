@@ -183,6 +183,8 @@ export function debuggerClient(opts: Options) {
       return content(await client.call("veritly_debug_step", { configuration, action: name, projectPath: args.project_path }, timeout))
     }
     const result = content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
+    if (name === "evaluate_expression" && object(result) && object(result.result) && typeof result.result.value === "string" && result.result.value.startsWith("ERROR:"))
+      return { ...result, result: { ...result.result, error: result.result.value, hint: "This frame cannot resolve the expression; at function entry, step-over to an executable statement and inspect the current location before evaluating parameters." } }
     if (["set_breakpoint", "remove_breakpoint"].includes(name)) {
       const client = await native(ide)
       await client.call("veritly_save_project", { projectPath: args.project_path }, timeout)
