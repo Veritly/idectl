@@ -70,6 +70,21 @@ class Cargo : McpToolset {
   }
 
   @McpTool
+  @McpDescription("Cancel Veritly-owned pending native step plans before continuing the selected paused configuration. Does not remove breakpoints or resume execution.")
+  suspend fun veritly_debug_cancel_step(configuration: String): String {
+    val project = currentCoroutineContext().project
+    val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
+    require(sessions.size == 1) { "Select exactly one active native debug configuration" }
+    val session = sessions.single()
+    require(session.isSuspended) { "Continuing requires a paused session" }
+    val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
+    process.postCommand<String> { driver ->
+      driver.executeInterpreterCommand(-1, -1, "script veritly_step.finish(lldb.debugger)")
+    }.await()
+    return Gson().toJson(mapOf("cancelled" to true))
+  }
+
+  @McpTool
   @McpDescription("Attach an absolute Cargo.toml path to this IDE project. Returns whether its Cargo model is ready; retry while loading.")
   suspend fun veritly_cargo_attach(@McpDescription("Absolute path to Cargo.toml") manifest: String): String {
     val settings = RsDebuggerSettings.Helper.getInstance()

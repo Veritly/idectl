@@ -73,7 +73,8 @@ def run(debugger, exe, source):
             break
     else:
         raise AssertionError('step-into skipped the workspace helper after its library argument')
-    process.Kill()
+    process.Continue()
+    assert process.GetState() == lldb.eStateExited, 'a completed step must not pause again on resume'
 
     process, thread = launch()
     thread.StepOut()
@@ -103,11 +104,9 @@ def run(debugger, exe, source):
     else:
         raise AssertionError('workspace breakpoint did not interrupt the step')
     interrupt.SetEnabled(False)
-    for _ in range(3):
-        process.Continue()
-        if process.GetState() == lldb.eStateExited:
-            break
-    assert process.GetState() == lldb.eStateExited
+    veritly_step.finish(debugger)
+    process.Continue()
+    assert process.GetState() == lldb.eStateExited, (process.GetState(), thread.GetStopReason(), str(thread.GetFrameAtIndex(0)))
     assert process.GetExitStatus() == 0
     print('PASS: async dependency frames skipped and user breakpoint preserved')
 

@@ -2,6 +2,26 @@
 
 import lldb
 
+plans = []
+
+
+def finish(debugger):
+    process = debugger.GetSelectedTarget().GetProcess()
+    active = [plan for plan in plans if plan.IsValid()
+              and plan.GetThread().GetProcess().GetUniqueID() == process.GetUniqueID()]
+    indexes = {plan.GetThread().GetIndexID() for plan in active}
+    for thread in process:
+        if thread.GetIndexID() not in indexes:
+            continue
+        result = lldb.SBCommandReturnObject()
+        debugger.GetCommandInterpreter().HandleCommand(
+            "thread plan discard 1", lldb.SBExecutionContext(thread), result
+        )
+        if not result.Succeeded():
+            raise RuntimeError(result.GetError())
+    plans[:] = [plan for plan in plans if plan.IsValid()
+                and plan.GetThread().GetProcess().GetUniqueID() != process.GetUniqueID()]
+
 
 def step(debugger, index, plan):
     if plan not in ("Into", "Over", "Out"):
@@ -10,6 +30,7 @@ def step(debugger, index, plan):
     thread = process.GetThreadByIndexID(index)
     if process.GetState() != lldb.eStateStopped or not thread.IsValid():
         raise ValueError("The selected IDE thread is not available in a stopped process")
+    finish(debugger)
     result = lldb.SBCommandReturnObject()
     debugger.GetCommandInterpreter().HandleCommand(
         f"thread step-scripted -C veritly_step.{plan} -m all-threads {thread.GetIndexID()}", result
@@ -21,6 +42,7 @@ def step(debugger, index, plan):
 class Over:
     def __init__(self, plan, _):
         self.plan = plan
+        plans.append(plan)
         frame = plan.GetThread().GetFrameAtIndex(0)
         line = frame.GetLineEntry()
         start = line.GetStartAddress()
@@ -34,8 +56,15 @@ class Over:
         return self.plan.QueueThreadPlanForStepOverRange(start, size)
 
     def explains_stop(self, event):
-        # Breakpoints, signals and exceptions remain visible to the user.
-        return False
+        reason = self.plan.GetThread().GetStopReason()
+        if reason in (
+            lldb.eStopReasonBreakpoint, lldb.eStopReasonWatchpoint,
+            lldb.eStopReasonSignal, lldb.eStopReasonException,
+        ):
+            # Preserve the user's stop, but do not resume an interrupted step later.
+            self.plan.SetPlanComplete(True)
+            return False
+        return self.child.IsPlanComplete()
 
     def should_stop(self, event):
         if not self.child.IsPlanComplete():
@@ -63,6 +92,7 @@ class Over:
 class Out(Over):
     def __init__(self, plan, _):
         self.plan = plan
+        plans.append(plan)
         self.child = plan.QueueThreadPlanForStepOut(0)
 
 

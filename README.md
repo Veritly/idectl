@@ -4,6 +4,7 @@ Adds run and debug lifecycle tools to the JetBrains MCP server. The plugin obser
 
 Cargo attachment enables Rust stepping filters for the standard library and external crates.
 `veritly_debug_step` targets the IDE-selected thread explicitly for step-into, step-over and step-out, skipping dependency frames after async returns while preserving breakpoint and exception stops.
+`veritly_debug_cancel_step` discards only Veritly-owned pending step plans before a normal resume, so an interrupted step cannot pause execution again afterward.
 Run its native regression check with `python3 test/stepping.py IDE_PATH/bin/lldb/linux/x64/bin/lldb` (requires `rustc`).
 `debuggerPatch` builds the pinned Debugger MCP 5.4.0 dependency with corrected collection of automatically expanded frame scope groups; it requires `-PdebuggerPath=PATH_TO_VERIFIED_UPSTREAM_JAR`.
 The collector source under `src/debugger` derives from hechtcarmel/jetbrains-debugger-mcp-plugin revision `411dc38420824a6b59a56d6685285a7b02a0a053`; its license is preserved there.
