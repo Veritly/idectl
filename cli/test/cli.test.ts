@@ -9,6 +9,22 @@ import { wait } from "../src/job"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
+test("startup selection errors are JSON and explain frontend debugger selection", async () => {
+  for (const args of [["--service"], ["--service", "unknown"], ["--service", "frontend"]]) {
+    const proc = Bun.spawn(["bun", cli, "debug", "status", ...args], { stdout: "pipe", stderr: "pipe" })
+    const output = new Response(proc.stdout).text()
+    const error = await new Response(proc.stderr).json()
+    expect(await proc.exited).toBe(1)
+    expect(await output).toBe("")
+    expect(error.ok).toBe(false)
+    expect(error.hint).toContain("--help")
+    if (args[1] === "frontend") {
+      expect(error.error).toContain("--ide webstorm --project")
+      expect(error.error).toContain("browser.context")
+    }
+  }
+})
+
 test("JSON stdin accepts a piped object and rejects an empty pipe", async () => {
   for (const value of ["", '{"condition":"name === \\"projects\\""}']) {
     const proc = Bun.spawn(["bun", "-e", 'import { input } from "./src/core"; console.log(JSON.stringify(await input(["-"])))'], {

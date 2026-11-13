@@ -32,6 +32,10 @@ function read(folder: string) {
 }
 
 export function context(name: string) {
+  if (name === "frontend") {
+    const active = owner()
+    throw new Error(`--service selects a Rust backend; use ${active ? active.context.join(" ") : "--ide webstorm --project packages/app --session ID"} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
+  }
   const key = Object.keys(components).find((item) => item === name || service(item) === name)
   if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
   const folder = dir(key)
