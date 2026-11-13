@@ -1,6 +1,4 @@
-"""LLDB source step-over that finishes outside Rust dependency frames."""
-
-import lldb
+"""LLDB source stepping that finishes outside Rust dependency frames."""
 
 
 class Over:
@@ -37,4 +35,10 @@ class Over:
         return False
 
     def stop_description(self, stream):
-        stream.Print("Workspace source step-over completed")
+        stream.Print("Workspace source step completed")
+
+
+class Out(Over):
+    def __init__(self, plan, _):
+        self.plan = plan
+        self.child = plan.QueueThreadPlanForStepOut(0)

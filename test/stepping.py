@@ -50,6 +50,18 @@ def run(debugger, exe, source):
     assert library, 'fixture must reproduce the native dependency-frame stop'
     process.Kill()
 
+    process, thread = launch()
+    thread.StepOut()
+    assert 'future.rs' in str(thread.GetFrameAtIndex(0).GetLineEntry().GetFileSpec())
+    process.Kill()
+
+    process, thread = launch()
+    error = thread.StepUsingScriptedThreadPlan('veritly_step.Out')
+    assert error.Success(), str(error)
+    assert str(thread.GetFrameAtIndex(0).GetLineEntry().GetFileSpec()) == source
+    assert 'wrap' in thread.GetFrameAtIndex(0).GetFunctionName()
+    process.Kill()
+
     interrupt = target.BreakpointCreateByLocation(source, next(i for i, line in enumerate(SOURCE.splitlines(), 1) if "// interrupt" in line))
     assert interrupt.GetNumLocations() > 0
     process, thread = launch()
