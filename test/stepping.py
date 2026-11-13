@@ -21,10 +21,13 @@ async fn wrap() -> u32 {
     future.await
 }
 fn main() {
+    let worker = std::thread::spawn(|| {
     let mut future = Box::pin(wrap());
     let mut context = Context::from_waker(Waker::noop());
     let result = future.as_mut().poll(&mut context);
     let _ = std::hint::black_box(result); // interrupt
+    });
+    worker.join().unwrap();
 }
 '''
 
@@ -55,8 +58,12 @@ def run(debugger, exe, source):
     process.Kill()
 
     process, thread = launch()
-    error = thread.StepUsingScriptedThreadPlan('veritly_step.Into')
-    assert error.Success(), str(error)
+    import veritly_step
+    others = [row for row in process if row.GetThreadID() != thread.GetThreadID()]
+    assert others, 'fixture needs an unrelated waiting thread'
+    process.SetSelectedThread(others[0])
+    veritly_step.step(debugger, thread.GetThreadID(), 'Into')
+    assert process.GetSelectedThread().GetThreadID() == thread.GetThreadID()
     frame = thread.GetFrameAtIndex(0)
     assert str(frame.GetLineEntry().GetFileSpec()) == source
     assert frame.GetLineEntry().GetLine() > 0

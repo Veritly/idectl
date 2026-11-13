@@ -16,6 +16,7 @@ import org.rust.cargo.project.model.CargoProject
 import org.rust.debugger.settings.RsDebuggerSettings
 import com.intellij.xdebugger.XDebuggerManager
 import com.jetbrains.cidr.execution.debugger.CidrDebugProcess
+import com.jetbrains.cidr.execution.debugger.CidrStackFrame
 import kotlinx.coroutines.future.await
 import com.jetbrains.cidr.execution.debugger.backend.lldb.LLDBDriverConfiguration
 
@@ -52,13 +53,14 @@ class Cargo : McpToolset {
     require(sessions.size == 1) { "Select exactly one active native debug configuration" }
     val session = sessions.single()
     require(session.isSuspended) { "Stepping requires a paused session" }
+    val frame = session.currentStackFrame as? CidrStackFrame ?: error("Select a native stack frame before stepping")
     val process = session.debugProcess as? CidrDebugProcess ?: error("Configuration does not use the native debugger")
     require(process.runParameters.debuggerDriverConfiguration is LLDBDriverConfiguration) { "Workspace stepping requires LLDB" }
     val output = process.postCommand<String> { driver ->
-      driver.executeInterpreterCommand(-1, -1, "thread step-scripted -C veritly_step.$plan -m all-threads")
+      driver.executeInterpreterCommand(frame.threadId, 0, "script veritly_step.step(lldb.debugger, ${frame.threadId}, '$plan')")
     }.await()
     require(output.isBlank()) { output }
-    return Gson().toJson(mapOf("action" to action, "status" to "started"))
+    return Gson().toJson(mapOf("action" to action, "status" to "started", "thread" to frame.threadId))
   }
 
   @McpTool

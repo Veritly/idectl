@@ -1,5 +1,22 @@
 """LLDB source stepping that finishes outside Rust dependency frames."""
 
+import lldb
+
+
+def step(debugger, identity, plan):
+    if plan not in ("Into", "Over", "Out"):
+        raise ValueError("Expected Into, Over or Out")
+    process = debugger.GetSelectedTarget().GetProcess()
+    thread = process.GetThreadByID(identity)
+    if process.GetState() != lldb.eStateStopped or not thread.IsValid():
+        raise ValueError("The selected IDE thread is not available in a stopped process")
+    result = lldb.SBCommandReturnObject()
+    debugger.GetCommandInterpreter().HandleCommand(
+        f"thread step-scripted -C veritly_step.{plan} -m all-threads {thread.GetIndexID()}", result
+    )
+    if not result.Succeeded():
+        raise RuntimeError(result.GetError())
+
 
 class Over:
     def __init__(self, plan, _):
