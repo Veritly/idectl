@@ -115,7 +115,7 @@ async function main() {
     return 0
   }
   if (group === "doctor") {
-    const value = await doctor(debug, { chosen, project })
+    const value = await doctor(debug, { chosen, project, source: context?.source, service: scope })
     print(value)
     return value.ok ? 0 : 1
   }

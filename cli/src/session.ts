@@ -36,7 +36,7 @@ export function context(name: string) {
   if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
   const folder = dir(key)
   const state = fs.existsSync(folder) ? read(folder) : undefined
-  return { project: scope(root, components[key]).project, state }
+  return { project: scope(root, components[key]).project, source: components[key], state }
 }
 
 export async function browser(name: string) {

@@ -6,7 +6,7 @@ import { jetbrains } from "./jetbrains"
 import { inspect } from "./plugin"
 import type { debuggerClient } from "./debugger"
 
-export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { chosen?: string; project?: string }) {
+export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { chosen?: string; project?: string; source?: string; service?: string }) {
   const chosen = opts.chosen
   const project = opts.project
   const endpoints = debug.endpoints
@@ -69,6 +69,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     : { ok: false as const, error: "JetBrains MCP is not running in the selected IDE" }
   const target = project ? path.resolve(project) : selected ? opened(selected) : undefined
   const runs = selected && target ? await attempt(() => configs(selected, target)) : { ok: false as const, error: "No IDE project selected; open a project or pass --project" }
+  const missing = !runs.ok && runs.error.includes('"project_not_found"')
   const installed = ides.map((ide) => {
     const bin = launcher(ide)
     const live = active.find((item) => item.id === ide.id)
@@ -118,6 +119,10 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   }
   return {
     ok: Object.values(checks).every(Boolean),
+    phase: missing ? "project_not_open" : undefined,
+    hint: missing
+      ? `${opts.source && selected ? `Run ./script/veritly-ide open ${quote(opts.source)} --ide ${selected.id}, then repeat doctor` : "Open the selected source component with veritly-ide open, then repeat doctor"}${opts.service ? `; debug up ${opts.service} also opens its required IDE projects automatically` : ""}. An unopened project is a preparation step, not a missing IDE installation.`
+      : undefined,
     root,
     env: file,
     namespace,
