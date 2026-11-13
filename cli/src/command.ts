@@ -362,14 +362,25 @@ export async function main() {
       stop: "stop_debug_session",
     }
     if (action === "commands") {
-      const query = args.shift()
-      const name = query ? map[query] || query.replaceAll("-", "_") : undefined
-      if (name && !ide.tools.some((item) => item.name === name)) throw new Error(`unknown debug command ${name}`)
+      const aliases: Record<string, string> = {
+        ...map, vars: "get_variables", eval: "evaluate_expression", stack: "get_stack_trace",
+        source: "get_source_context", threads: "list_threads", frame: "select_stack_frame",
+        console: "get_console_output", set: "evaluate_expression", wait: "wait_for_pause",
+        start: "start_debug_session", run: "execute_run_configuration",
+        "breakpoint set": "set_breakpoint", "breakpoint list": "list_breakpoints", "breakpoint remove": "remove_breakpoint",
+      }
+      const query = args.join(" ").trim()
+      if (query === "inspect") throw new Error("debug inspect combines status, stack and variables; use debug inspect --help for CLI syntax, or debug commands status|stack|vars for individual tool schemas")
+      if (query === "breakpoint") throw new Error("Choose debug commands breakpoint set, breakpoint list, or breakpoint remove")
+      const name = query ? aliases[query] || query.replaceAll("-", "_") : undefined
+      if (name && !ide.tools.some((item) => item.name === name)) throw new Error(`Unknown debugger command ${query}; use debug commands with the same selectors to list available commands`)
       print(
         ide.tools
           .filter((item) => !name || item.name === name)
           .map((item) => ({
             command: typeof item.name === "string" ? item.name.replaceAll("_", "-") : item.name,
+            cli: Object.entries(aliases).filter(([, tool]) => tool === item.name)
+              .map(([alias]) => `veritly-ide ${alias.startsWith("breakpoint ") ? "" : "debug "}${alias}`),
             description: name ? item.description : undefined,
             inputSchema: name ? item.inputSchema : undefined,
           })),
@@ -379,16 +390,31 @@ export async function main() {
     if (action && ["step-over", "step-into", "step-out"].includes(action)) {
       const seconds = timeout ? Number(timeout) : 60
       if (!Number.isFinite(seconds) || seconds < 1 || seconds > 60) throw new Error("Step timeout must be 1..60 seconds")
-      const result = await tool(ide, map[action], await input(args), 30_000)
-      const waited = await tool(ide, "wait_for_pause", { timeout: seconds }, seconds * 1000 + 2000)
+      const params = await input(args)
+      const before = await tool(ide, "get_debug_session_status", {
+        session_id: params.session_id, project_path: params.project_path,
+        include_variables: false, include_source_context: false, max_stack_frames: 1,
+      })
+      if (!object(before) || before.state !== "paused") throw new Error("Stepping requires a paused session; check debug status or trigger the intended breakpoint first")
+      const id = field(before, ["sessionId"])
+      if (!id) throw new Error("Paused debugger session has no ID")
+      const result = await tool(ide, map[action], { ...params, session_id: id }, 30_000)
+      const waited = await tool(ide, "wait_for_pause", { timeout: seconds, session_id: id }, seconds * 1000 + 2000)
+      const same = object(waited) && object(before.currentLocation) && object(waited.currentLocation)
+        && before.currentLocation.file === waited.currentLocation.file && before.currentLocation.line === waited.currentLocation.line
       print(object(waited) ? {
         ...pause(waited),
+        from: before.currentLocation,
         action,
         result,
         hint: waited.state === "stopped"
           ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
+          : waited.state === "paused" && waited.pausedReason === "breakpoint"
+          ? "A breakpoint interrupted the step; inspect this stop before continuing."
+          : waited.state === "paused" && same
+          ? "The step returned to the same source line; inspect values or step again, since async and inline calls can revisit a line."
           : waited.state === "paused"
-          ? "Inspect this frame, step again, or resume; async and inline calls can revisit a source line before advancing."
+          ? "Inspect the current frame; for async work, confirm completion from result values or the original request."
           : "The step is still running; check debug status before issuing another step.",
       } : waited)
     } else if (action === "resume") {

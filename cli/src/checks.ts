@@ -227,7 +227,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
         .filter((key) => value[key] !== undefined && value[key] !== null)
         .map((key) => [key, value[key]]),
     )
-    if (value.state === "paused") result.hint = "Inspect the paused session and its variables before resuming."
+    if (value.state === "paused") result.hint = "Inspect paused values with debug vars or debug eval; a paused browser cannot run page JavaScript."
     return result
   }
 
