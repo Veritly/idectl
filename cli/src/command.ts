@@ -1,4 +1,5 @@
 import path from "node:path"
+import { step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, file, namespace, ides, specs, object, print, attempt, launcher, input, opened, rows, field } from "./core"
 import { lifecycle } from "./lifecycle"
@@ -398,16 +399,26 @@ export async function main() {
       if (!object(before) || before.state !== "paused") throw new Error("Stepping requires a paused session; check debug status or trigger the intended breakpoint first")
       const id = field(before, ["sessionId"])
       if (!id) throw new Error("Paused debugger session has no ID")
-      const result = await tool(ide, map[action], { ...params, session_id: id }, 30_000)
-      const waited = await tool(ide, "wait_for_pause", { timeout: seconds, session_id: id }, seconds * 1000 + 2000)
+      if (ide.id === "rustrover" && typeof before.name !== "string") throw new Error("Paused native session has no configuration name")
+      const execution = await step({
+        action: map[action], seconds,
+        params: { ...params, session_id: id },
+        call: (name, args, timeout) => tool(ide, name, args, timeout),
+        filter: ide.id === "rustrover" ? () => debug.filter(ide, String(before.name), params.project_path) : undefined,
+      })
+      const result = execution.result
+      const waited = execution.waited
       const same = object(waited) && object(before.currentLocation) && object(waited.currentLocation)
         && before.currentLocation.file === waited.currentLocation.file && before.currentLocation.line === waited.currentLocation.line
       print(object(waited) ? {
         ...pause(waited),
         from: before.currentLocation,
+        filtering: execution.filtering,
         action,
         result,
-        hint: waited.state === "stopped"
+        hint: execution.filtering && ["limit", "deadline", "thread_changed"].includes(execution.filtering.outcome)
+          ? "Automatic filtering stopped at its safety boundary; inspect debug status and the current frame before continuing."
+          : waited.state === "stopped"
           ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
           : waited.state === "paused" && waited.pausedReason === "breakpoint"
           ? "A breakpoint interrupted the step; inspect this stop before continuing."

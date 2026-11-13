@@ -192,6 +192,17 @@ export function debuggerClient(opts: Options) {
     return result
   }
 
+  async function filter(ide: Endpoint, configuration: string, target?: unknown) {
+    const client = await native(ide)
+    try {
+      return content(await client.call("veritly_debug_filter", {
+        configuration, projectPath: typeof target === "string" ? target : project || opened(ide),
+      }, 5000))
+    } finally {
+      await client.close()
+    }
+  }
+
   async function configs(ide: Endpoint, target?: string) {
     const data = await tool(ide, "list_run_configurations", { project_path: target })
     return rows(data, "configurations")
@@ -233,5 +244,5 @@ export function debuggerClient(opts: Options) {
   }
 
 
-  return { launchedBrowser, browserProcesses, endpoints, endpoint, tool, configs, config, sessions, launch }
+  return { launchedBrowser, browserProcesses, endpoints, endpoint, tool, filter, configs, config, sessions, launch }
 }
