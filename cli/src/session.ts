@@ -140,8 +140,8 @@ async function call(args: string[]) {
   const text = await output
   const err = await error
   const value: unknown = text.trim() ? JSON.parse(text) : undefined
-  if (!object(value)) throw new Error(err.trim().slice(-2000) || `Command exited ${code}`)
-  if (code !== 0 && code !== 2 && args[0] !== "wait") throw new Error(typeof value.error === "string" ? value.error : err.trim() || `Command exited ${code}`)
+  if (!object(value)) throw new Error(`${args.join(" ")}: ${err.trim().slice(-2000) || `Command exited ${code}`}`)
+  if (code !== 0 && code !== 2 && args[0] !== "wait") throw new Error(`${args.join(" ")}: ${typeof value.error === "string" ? value.error : err.trim() || `Command exited ${code}`}`)
   return value
 }
 
@@ -226,7 +226,12 @@ async function worker(name: string, cleanup: boolean) {
     }
     await attempt(async () => {
       if (!object(state.route)) return
-      if (state.route.phase === "creating") throw new Error("Intercept creation outcome is unknown; inspect Telepresence before cleanup")
+      if (state.route.phase === "creating") {
+        if (await routeStatus(name)) throw new Error("Intercept creation outcome is unknown; inspect Telepresence before cleanup")
+        state.route = undefined
+        save(folder, state)
+        return
+      }
       if (state.route.owned !== true) { state.route = undefined; save(folder, state); return }
       const current = await routeStatus(name)
       if (current && JSON.stringify(current.ids) !== JSON.stringify(state.route.ids)) throw new Error("The intercept changed; it was preserved")
@@ -236,7 +241,12 @@ async function worker(name: string, cleanup: boolean) {
     })
     await attempt(async () => {
       if (!object(state.frontendRoute)) return
-      if (state.frontendRoute.phase === "creating") throw new Error("Frontend intercept creation outcome is unknown; inspect Telepresence before cleanup")
+      if (state.frontendRoute.phase === "creating") {
+        if (await routeStatus("frontend")) throw new Error("Frontend intercept creation outcome is unknown; inspect Telepresence before cleanup")
+        state.frontendRoute = undefined
+        save(folder, state)
+        return
+      }
       if (state.frontendRoute.owned !== true) { state.frontendRoute = undefined; save(folder, state); return }
       const current = await routeStatus("frontend")
       if (current && JSON.stringify(current.ids) !== JSON.stringify(state.frontendRoute.ids)) throw new Error("The frontend intercept changed; it was preserved")

@@ -102,7 +102,7 @@ export function debuggerClient(opts: Options) {
     throw new Error(`Select --service NAME or --ide ID; active IDEs: ${rows.map((row) => row.id).join(", ")}`)
   }
 
-  async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 5_000) {
+  async function tool(ide: Endpoint, name: string, input: Json = {}, timeout = 60_000) {
     const schema = ide.tools.find((item) => item.name === name)
     if (!schema) {
       const alternate = name.replaceAll("-", "_")
@@ -125,7 +125,7 @@ export function debuggerClient(opts: Options) {
         await rpc(ide.port, "tools/call", {
           name: "list_debug_sessions",
           arguments: { project_path: args.project_path },
-        }),
+        }, timeout),
       )
       const all = rows(result, "sessions")
       const live = opts.configuration ? all.filter((row) => row.runConfigurationName === opts.configuration && ["running", "paused"].includes(String(row.state))) : all
@@ -161,7 +161,7 @@ export function debuggerClient(opts: Options) {
   async function launch(ide: Endpoint, name: string) {
     await config(ide, name)
     const before = await sessions(ide)
-    const result = await attempt(() => tool(ide, "start_debug_session", { configuration_name: name }, 10_000))
+    const result = await attempt(() => tool(ide, "start_debug_session", { configuration_name: name }, 60_000))
     if (result.ok) return result.value
     if (!/timed?\s*out|timeout/i.test(result.error)) throw new Error(result.error)
     const live = (await sessions(ide)).filter(

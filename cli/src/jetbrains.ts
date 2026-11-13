@@ -72,7 +72,7 @@ export async function jetbrains(port: number) {
       } while (cursor)
       return tools
     },
-    async call(name: string, args: Json, timeout = 10_000) {
+    async call(name: string, args: Json, timeout = 60_000) {
       const result = await send("tools/call", { name, arguments: args }, false, timeout)
       if (!object(result)) throw new Error("JetBrains MCP returned an invalid tool result")
       if (result.isError === true) {
@@ -143,7 +143,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       return 0
     }
     if (action !== "call" && !aliases[action || ""]) throw new Error("jetbrains expects tools|schema|call|status|configs|output|start")
-    const seconds = timeout ? Number(timeout) : 5
+    const seconds = timeout ? Number(timeout) : 60
     if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 3600) throw new Error("--timeout must be between 0 and 3600 seconds")
     const controls: Record<string, string> = { stop: "STOP", pause: "PAUSE", resume: "RESUME", wait: "WAIT_FOR_PAUSE", "step-over": "STEP_OVER", "step-into": "STEP_INTO", "step-out": "STEP_OUT" }
     const values: Json = action === "start"
