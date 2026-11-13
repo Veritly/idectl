@@ -419,7 +419,11 @@ export async function main() {
         action,
         result,
         hint: object(waited.blocker) ? waited.blocker.hint
-          : execution.filtering && ["limit", "deadline", "thread_changed"].includes(execution.filtering.outcome)
+          : execution.filtering?.interruption === "native"
+          ? "The native debugger reported an interruption; automatic recovery stopped. Inspect debug threads and debug stack with the same selectors before continuing."
+          : execution.filtering?.outcome === "thread_changed"
+          ? "The debugger stopped on a different thread; inspect its stack and request identifiers before continuing rather than assuming it is the original request."
+          : execution.filtering && ["limit", "deadline"].includes(execution.filtering.outcome)
           ? "Automatic filtering stopped at its safety boundary; inspect debug status and the current frame before continuing."
           : waited.state === "stopped"
           ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
@@ -428,7 +432,7 @@ export async function main() {
           : waited.state === "paused" && same
           ? "The step returned to the same source line; inspect values or step again, since async and inline calls can revisit a line."
           : waited.state === "paused"
-          ? "Inspect the current frame; for async work, confirm completion from result values or the original request."
+          ? "Inspect the current frame and request identifiers after async stepping; the same worker thread can run different requests. Confirm completion on the original request."
           : "The step is still running; check debug status before issuing another step.",
       } : waited)
     } else if (action === "resume") {

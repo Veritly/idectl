@@ -72,3 +72,16 @@ test("returns a paused companion backend promptly without issuing another fronte
   expect(result.waited).toMatchObject({ state: "running", waitResult: "blocked", blocker: { service: "office" } })
   expect(calls).toEqual(["step_over", "wait_for_pause"])
 })
+
+test("continues Step Into through a line-zero async stop rather than unwinding past its helper", async () => {
+  const zero = { ...origin, location: { ...origin.location, file: "/app/lib.rs", line: 0 } }
+  const result = await replay([origin, zero, origin, helper], Array(3).fill(paused))
+  expect(result.calls.filter((name) => name !== "wait_for_pause")).toEqual(["step_into", "step_into", "step_into"])
+  expect(result.result.filtering).toMatchObject({ outcome: "visible", skipped: [{ ...zero.location, reason: "no_source" }] })
+})
+
+test("stops for a native interruption even when the debugger MCP labels it a step", async () => {
+  const result = await replay([origin, { ...library, cause: true }], [paused])
+  expect(result.calls).toEqual(["step_into", "wait_for_pause"])
+  expect(result.result.filtering).toMatchObject({ outcome: "interrupted", interruption: "native", skipped: [] })
+})

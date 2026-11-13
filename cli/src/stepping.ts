@@ -34,7 +34,7 @@ export async function step(opts: {
 }) {
   const deadline = Date.now() + opts.seconds * 1000
   const origin = opts.filter ? policy(await opts.filter()) : undefined
-  const skipped: Policy["location"][] = []
+  const skipped: (Policy["location"] & { reason: "ide_filter" | "no_source" })[] = []
   const run = async (action: string) => {
     const remaining = deadline - Date.now()
     if (remaining <= 0) throw new Error("Step deadline expired before execution; the debugger remains paused")
@@ -45,20 +45,23 @@ export async function step(opts: {
   if (!origin || !opts.filter) return { ...current, filtering: undefined }
   for (let count = 0; ; count++) {
     const waited = current.waited
-    const finish = (outcome: string) => ({ ...current, filtering: { source: "ide", skipped, outcome } })
+    const finish = (outcome: string, interruption?: string, frame?: Policy) => ({
+      ...current,
+      filtering: { source: "ide", skipped, outcome, interruption, frame: frame?.location, threads: frame ? { from: origin.thread, to: frame.thread } : undefined },
+    })
     if (!object(waited) || waited.state !== "paused") return finish("not_paused")
-    if (waited.pausedReason !== "step" || waited.breakpointHit) return finish("interrupted")
+    if (waited.pausedReason !== "step" || waited.breakpointHit) return finish("interrupted", waited.breakpointHit ? "breakpoint" : String(waited.pausedReason))
     const next = policy(await opts.filter())
-    if (next.cause) return finish("interrupted")
-    if (next.thread !== origin.thread) return finish("thread_changed")
+    if (next.cause) return finish("interrupted", "native", next)
+    if (next.thread !== origin.thread) return finish("thread_changed", undefined, next)
     // Continue Step Into when an automatic unwind returns to its original call site.
     const retry = opts.action === "step_into" && skipped.length > 0
       && next.location.file === origin.location.file && next.location.line === origin.location.line
       && next.location.function === origin.location.function
-    if (next.allowed && !retry) return finish("visible")
-    if (count === 32) return finish("limit")
-    if (Date.now() >= deadline) return finish("deadline")
-    if (!next.allowed) skipped.push(next.location)
+    if (next.allowed && next.location.line > 0 && !retry) return finish("visible", undefined, next)
+    if (count === 32) return finish("limit", undefined, next)
+    if (Date.now() >= deadline) return finish("deadline", undefined, next)
+    if (!next.allowed || next.location.line < 1) skipped.push({ ...next.location, reason: next.allowed ? "no_source" : "ide_filter" })
     current = await run(next.allowed ? opts.action : "step_out")
   }
 }
