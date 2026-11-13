@@ -10,12 +10,27 @@ export function policy(value: unknown): Policy {
   return value as Policy
 }
 
+type Call = (name: string, params: Json, timeout: number) => Promise<unknown>
+
+export async function observe(call: Call, params: Json, deadline: number, blocked?: () => Promise<unknown>) {
+  while (true) {
+    const seconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
+    const timeout = blocked ? Math.min(5, seconds) : seconds
+    const waited = await call("wait_for_pause", { ...params, timeout }, timeout * 1000 + 1000)
+    if (!object(waited) || waited.state === "paused" || waited.state === "stopped") return waited
+    const blocker = blocked ? await blocked() : undefined
+    if (blocker) return { ...waited, waitResult: "blocked", blocker }
+    if (!blocked || Date.now() >= deadline) return waited
+  }
+}
+
 export async function step(opts: {
   action: string
   seconds: number
   params: Json
-  call: (name: string, params: Json, timeout: number) => Promise<unknown>
+  call: Call
   filter?: () => Promise<unknown>
+  blocked?: () => Promise<unknown>
 }) {
   const deadline = Date.now() + opts.seconds * 1000
   const origin = opts.filter ? policy(await opts.filter()) : undefined
@@ -24,8 +39,7 @@ export async function step(opts: {
     const remaining = deadline - Date.now()
     if (remaining <= 0) throw new Error("Step deadline expired before execution; the debugger remains paused")
     const result = await opts.call(action, opts.params, remaining)
-    const seconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1000))
-    return { result, waited: await opts.call("wait_for_pause", { ...opts.params, timeout: seconds }, seconds * 1000 + 1000) }
+    return { result, waited: await observe(opts.call, opts.params, deadline, opts.blocked) }
   }
   let current = await run(opts.action)
   if (!origin || !opts.filter) return { ...current, filtering: undefined }

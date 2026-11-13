@@ -7,6 +7,14 @@ import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
 
+export function evaluation(error: string) {
+  if (error.includes("not a scalar type"))
+    return "The native evaluator cannot compare this value directly; use supported scalar fields in conditions, then inspect the actual local to confirm the intended request."
+  if (/UnsupportedFunction|extra tokens at EOF|not calling a function/.test(error))
+    return "The native evaluator does not support this call or syntax; use debug vars and inspect stored fields instead of calling methods."
+  return "This frame cannot resolve the expression; inspect debug vars and the selected stack frame, then use debug commands eval to check supported syntax."
+}
+
 export function debuggerClient(opts: Options) {
   const chosen = opts.chosen
   const override = opts.override
@@ -178,12 +186,7 @@ export function debuggerClient(opts: Options) {
     const result = content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
     if (name === "evaluate_expression" && object(result) && object(result.result) && typeof result.result.value === "string" && result.result.value.startsWith("ERROR:")) {
       const error = result.result.value
-      const hint = error.includes("not a scalar type")
-        ? "The native evaluator cannot compare this value directly; use supported scalar fields in conditions, then inspect the actual local to confirm the intended request."
-        : error.includes("UnsupportedFunction") || error.includes("extra tokens at EOF")
-          ? "The native evaluator does not support this call or syntax; inspect stored locals and simple fields instead of executing methods or closures."
-          : "This frame cannot resolve the expression; at function entry, step-over to an executable statement and inspect the current location before evaluating parameters."
-      return { ...result, result: { ...result.result, error, hint } }
+      return { ...result, result: { ...result.result, error, hint: evaluation(error) } }
     }
     if (["set_breakpoint", "remove_breakpoint"].includes(name)) {
       const client = await native(ide)

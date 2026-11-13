@@ -1,5 +1,5 @@
 import path from "node:path"
-import { step } from "./stepping"
+import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, file, namespace, ides, specs, object, print, attempt, launcher, input, opened, rows, field } from "./core"
 import { lifecycle } from "./lifecycle"
@@ -9,7 +9,7 @@ import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
-import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner } from "./session"
+import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
 import { scope as projectScope } from "./project"
 
@@ -396,12 +396,13 @@ export async function main() {
         session_id: params.session_id, project_path: params.project_path,
         include_variables: false, include_source_context: false, max_stack_frames: 1,
       })
-      if (!object(before) || before.state !== "paused") throw new Error("Stepping requires a paused session; check debug status or trigger the intended breakpoint first")
+      if (!object(before) || before.state !== "paused") throw new Error("Stepping requires a paused session; an earlier step may still be running. Check debug status and wait for its pause before issuing another step.")
       const id = field(before, ["sessionId"])
       if (!id) throw new Error("Paused debugger session has no ID")
       if (ide.id === "rustrover" && typeof before.name !== "string") throw new Error("Paused native session has no configuration name")
       const execution = await step({
         action: map[action], seconds,
+        blocked: ide.id === "webstorm" ? () => sessionBlocked(id) : undefined,
         params: { ...params, session_id: id },
         call: (name, args, timeout) => tool(ide, name, args, timeout),
         filter: ide.id === "rustrover" ? () => debug.filter(ide, String(before.name), params.project_path) : undefined,
@@ -414,9 +415,11 @@ export async function main() {
         ...pause(waited),
         from: before.currentLocation,
         filtering: execution.filtering,
+        blocking: object(waited) ? waited.blocker : undefined,
         action,
         result,
-        hint: execution.filtering && ["limit", "deadline", "thread_changed"].includes(execution.filtering.outcome)
+        hint: object(waited.blocker) ? waited.blocker.hint
+          : execution.filtering && ["limit", "deadline", "thread_changed"].includes(execution.filtering.outcome)
           ? "Automatic filtering stopped at its safety boundary; inspect debug status and the current frame before continuing."
           : waited.state === "stopped"
           ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
@@ -458,7 +461,10 @@ export async function main() {
     else if (action === "wait") {
       const seconds = args[0] && /^\d+$/.test(args[0]) ? Number(args.shift()) : timeout ? Number(timeout) : 60
       if (!Number.isFinite(seconds) || seconds < 1) throw new Error("debug wait timeout must be positive")
-      const waited = await tool(ide, "wait_for_pause", { timeout: seconds }, seconds * 1000 + 2000)
+      const waited = await observe(
+        (name, args, timeout) => tool(ide, name, args, timeout), {}, Date.now() + seconds * 1000,
+        ide.id === "webstorm" && session ? () => sessionBlocked(session) : undefined,
+      )
       if (!details && args.length) throw new Error("debug wait variable names require --inspect")
       const status = object(waited) && waited.state !== "paused" ? await tool(ide, "get_debug_session_status", { include_variables: false, include_source_context: false, max_stack_frames: 5 }) : undefined
       if (status !== undefined && !object(status)) throw new Error("Debugger returned an invalid session status")
@@ -466,6 +472,8 @@ export async function main() {
       print(
         details && object(result) && result.state === "paused"
           ? await snapshot(ide, index(), args, result)
+          : object(result) && object(result.blocker)
+            ? { ...pause(result), blocking: result.blocker, hint: result.blocker.hint }
           : object(result) && result.state !== "paused"
             ? { ...pause(result), diagnosis: await diagnosis(ide), hint: "Trigger the operation after setting breakpoints (reload the same app page for load requests), then wait again; no pause alone does not prove a binding failure." }
             : pause(result),

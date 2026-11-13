@@ -54,3 +54,21 @@ test("bounds non-progressing library recovery and leaves the final stop paused",
 test("rejects missing filter metadata instead of guessing ownership", () => {
   expect(() => policy({ allowed: false })).toThrow("invalid native stepping-filter decision")
 })
+
+test("returns a paused companion backend promptly without issuing another frontend step", async () => {
+  const calls: string[] = []
+  const result = await step({
+    action: "step_over", seconds: 60, params: { session_id: "browser" },
+    blocked: async () => ({ service: "office", hint: "Resume the backend, then wait for the browser pause" }),
+    call: async (name, params) => {
+      calls.push(name)
+      if (name === "wait_for_pause") {
+        expect(params.timeout).toBe(5)
+        return { state: "running", waitResult: "timeout" }
+      }
+      return { status: "success" }
+    },
+  })
+  expect(result.waited).toMatchObject({ state: "running", waitResult: "blocked", blocker: { service: "office" } })
+  expect(calls).toEqual(["step_over", "wait_for_pause"])
+})

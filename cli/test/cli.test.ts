@@ -259,3 +259,9 @@ test("rejects a non-browser attach listener without sending it HTTP", async () =
     server.stop(true)
   }
 })
+
+test("an unsupported Rust method evaluation suggests stored fields rather than function entry", async () => {
+  const debug = await import("../src/debugger")
+  expect(debug.evaluation("ERROR: error: not calling a function")).toContain("stored fields")
+  expect(debug.evaluation("ERROR: error: not calling a function")).not.toContain("function entry")
+})
