@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened, selection } from "./core"
+import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened, selection, projects, quote } from "./core"
 import { cluster, port } from "./service"
 import { jetbrains } from "./jetbrains"
 import { inspect } from "./plugin"
@@ -41,6 +41,17 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   const selected = chosen
     ? active.find((item) => item.id === chosen)
     : project ? selection(active, project) : active.length === 1 ? active[0] : undefined
+  if (!selected && active.length > 1 || selected && !project && projects(selected).length > 1) {
+    return {
+      ok: false,
+      phase: "selection_required",
+      reason: "Multiple open IDE projects are expected; choose the project for this task before checking its health.",
+      choices: (selected ? [selected] : active).flatMap((ide) => projects(ide).map((project) => ({
+        ide: ide.id, project, command: `./script/veritly-ide doctor --ide ${ide.id} --project ${quote(project)}`,
+      }))),
+      hint: "Run the matching command from choices, then continue your task; selection_required is not an IDE or MCP health failure. For a Rust service, doctor --service NAME selects its project explicitly.",
+    }
+  }
   const known = selected ? ides.find((item) => item.id === selected.id) : undefined
   const bin = known ? launcher(known) : undefined
   const plugin = known && bin ? await attempt(async () => inspect(known, bin)) : { ok: false as const, error: "No IDE selected" }

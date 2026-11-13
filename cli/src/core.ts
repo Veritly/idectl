@@ -310,8 +310,12 @@ export function projects(ide: Endpoint) {
 
 export function opened(ide: Endpoint) {
   const unique = projects(ide)
-  if (unique.length > 1) throw new Error(`Multiple ${ide.name} projects are recorded (${unique.join(", ")}); select --project PATH or --service NAME`)
+  if (unique.length > 1) throw new Error(`Multiple ${ide.name} projects are recorded; retry this command with one explicit selector: ${unique.map((project) => `--ide ${ide.id} --project ${quote(project)}`).join(" | ")}. Multiple open projects are expected; select the project for your task.`)
   return unique[0]
+}
+
+export function quote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`
 }
 
 export function selection(ides: Endpoint[], project: string) {
