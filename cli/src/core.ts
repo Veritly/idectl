@@ -337,7 +337,10 @@ export async function input(values: string[]) {
     inline === "-"
       ? (await Bun.stdin.text()).trim()
       : inline || (process.stdin.isTTY ? "" : (await Bun.stdin.text()).trim())
-  if (!raw) return {}
+  if (!raw) {
+    if (inline === "-") throw new Error("JSON stdin is empty; pipe a JSON object into this command or pass the JSON object as an argument")
+    return {}
+  }
   const data: unknown = JSON.parse(raw)
   if (!object(data)) throw new Error("arguments must be a JSON object")
   return data

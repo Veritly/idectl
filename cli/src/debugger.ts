@@ -126,6 +126,26 @@ export function debuggerClient(opts: Options) {
       if (!target) throw new Error("No IDE project selected; open a project or pass --project")
       args.project_path = target
     }
+    if (name === "set_breakpoint") {
+      const all = rows(content(await rpc(ide.port, "tools/call", {
+        name: "list_breakpoints", arguments: { project_path: args.project_path },
+      }, timeout)), "breakpoints")
+      const existing = all.find((row) => row.temporary === true && row.file === args.file_path && row.line === args.line)
+      if (existing) {
+        const sessions = rows(content(await rpc(ide.port, "tools/call", {
+          name: "list_debug_sessions", arguments: { project_path: args.project_path },
+        }, timeout)), "sessions").filter((row) => row.state === "paused")
+        for (const row of sessions) {
+          const id = field(row, ["id", "sessionId"])
+          if (!id) throw new Error("Paused debug session has no ID")
+          const status = content(await rpc(ide.port, "tools/call", {
+            name: "get_debug_session_status", arguments: { project_path: args.project_path, session_id: id, include_variables: false, include_source_context: false, max_stack_frames: 1 },
+          }, timeout))
+          if (object(status) && object(status.breakpointHit) && status.breakpointHit.breakpointId === existing.id)
+            throw new Error(`This one-shot breakpoint already hit and will be removed on resume; inspect the pause, run debug resume --ide ${ide.id} --session ${id}, then set a fresh breakpoint before triggering a new action`)
+        }
+      }
+    }
     if (props?.session_id && !args.session_id && !(name === "get_source_context" && args.file_path)) {
       const result = content(
         await rpc(ide.port, "tools/call", {

@@ -9,6 +9,24 @@ import { wait } from "../src/job"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
+test("JSON stdin accepts a piped object and rejects an empty pipe", async () => {
+  for (const value of ["", '{"condition":"name === \\"projects\\""}']) {
+    const proc = Bun.spawn(["bun", "-e", 'import { input } from "./src/core"; console.log(JSON.stringify(await input(["-"])))'], {
+      cwd: path.resolve(import.meta.dir, ".."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    proc.stdin.write(value)
+    proc.stdin.end()
+    const output = new Response(proc.stdout).text()
+    const error = new Response(proc.stderr).text()
+    expect(await proc.exited).toBe(value ? 0 : 1)
+    if (value) expect(JSON.parse(await output)).toEqual(JSON.parse(value))
+    if (!value) expect(await error).toContain("JSON stdin is empty")
+  }
+})
+
 test("an explicit project selects its recorded active IDE and rejects ambiguity", () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "ide-selection-"))
   const file = record(project)

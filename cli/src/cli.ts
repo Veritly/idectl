@@ -53,6 +53,7 @@ const frame = option("--frame")
 const details = flag("--inspect")
 const full = flag("--full")
 const once = flag("--once")
+const condition = option("--condition")
 flag("--json")
 const url = option("--url")
 const attach = option("--attach")
@@ -80,7 +81,7 @@ veritly-ide close PATH | close --project PATH
 veritly-ide services
 veritly-ide start|stop|status frontend [--ide ID]
 veritly-ide route|unroute data|server|edge|office|gateway|governor
-veritly-ide breakpoint set FILE LINE [--once] [JSON] | list | remove ID
+veritly-ide breakpoint set FILE LINE [--once] [--condition EXPRESSION] [JSON] | list | remove ID
 veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 veritly-ide debug up|down data|server|edge|office|gateway|governor
 veritly-ide debug request SERVICE /PATH [--timeout SECONDS]
@@ -264,7 +265,13 @@ async function main() {
       const owner = ext === ".rs" ? "rustrover" : [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined
       if (owner && owner !== ide.id)
         throw new Error(`${target} belongs in ${owner}, but this selector chose ${ide.id}; use breakpoint set ${target} ${line}${once ? " --once" : ""} --ide ${owner} without --service`)
-      const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
+      const opts = await input(args)
+      if (condition !== undefined) {
+        if (!condition.trim()) throw new Error("--condition requires a nonempty expression")
+        if (opts.condition !== undefined) throw new Error("Pass the condition with --condition or JSON, not both")
+        opts.condition = condition
+      }
+      const result = await tool(ide, "set_breakpoint", { ...opts, ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
       print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints (reload the same app page for initial-load requests), then inspect the pause before resuming." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
