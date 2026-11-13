@@ -7,9 +7,13 @@ import tempfile
 
 SOURCE = '''use std::{future::{Future, ready}, pin::Pin, task::{Context, Waker}};
 #[inline(never)]
+fn add(value: u32) -> u32 {
+    value + 1
+}
+#[inline(never)]
 async fn load() -> u32 {
     let value = ready(41).await;
-    value + 1 // pause
+    add(value) // pause
 }
 #[inline(never)]
 async fn wrap() -> u32 {
@@ -51,6 +55,15 @@ def run(debugger, exe, source):
     process.Kill()
 
     process, thread = launch()
+    error = thread.StepUsingScriptedThreadPlan('veritly_step.Into')
+    assert error.Success(), str(error)
+    frame = thread.GetFrameAtIndex(0)
+    assert str(frame.GetLineEntry().GetFileSpec()) == source
+    assert frame.GetLineEntry().GetLine() > 0
+    assert 'add' in frame.GetFunctionName()
+    process.Kill()
+
+    process, thread = launch()
     thread.StepOut()
     assert 'future.rs' in str(thread.GetFrameAtIndex(0).GetLineEntry().GetFileSpec())
     process.Kill()
@@ -71,6 +84,7 @@ def run(debugger, exe, source):
         assert error.Success(), str(error)
         file = str(thread.GetFrameAtIndex(0).GetLineEntry().GetFileSpec())
         assert not any(part in file for part in ('/rustc/', '/lib/rustlib/', '/registry/src/')), file
+        assert thread.GetFrameAtIndex(0).GetLineEntry().GetLine() > 0
         if thread.GetStopReason() == lldb.eStopReasonBreakpoint:
             assert thread.GetStopReasonDataAtIndex(0) == interrupt.GetID()
             break

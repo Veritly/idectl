@@ -39,12 +39,13 @@ class Cargo : McpToolset {
   }
 
   @McpTool
-  @McpDescription("Step over or out in an explicitly named suspended Rust LLDB configuration, skipping dependency frames after async returns. Breakpoints and exceptions still interrupt the step.")
+  @McpDescription("Step in an explicitly named suspended Rust LLDB configuration, skipping dependency and synthetic source frames. Breakpoints and exceptions still interrupt the step.")
   suspend fun veritly_debug_step(configuration: String, action: String): String {
     val plan = when (action) {
       "step_over" -> "Over"
       "step_out" -> "Out"
-      else -> error("Expected step_over or step_out")
+      "step_into" -> "Into"
+      else -> error("Expected step_over, step_out or step_into")
     }
     val project = currentCoroutineContext().project
     val sessions = XDebuggerManager.getInstance(project).debugSessions.filter { !it.isStopped && it.sessionName == configuration }
