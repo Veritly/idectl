@@ -274,6 +274,9 @@ async function worker(name: string, cleanup: boolean) {
       save(folder, state)
     })
     await attempt(() => stopWeb("frontend"))
+    if (state.frontendStatus || state.backendStatus) await attempt(async () => {
+      await Promise.all([webarg, rustarg].map((args) => call(["jetbrains", "call", "veritly_save_project", "{}", ...args])))
+    })
     if (errors.length) throw new Error(errors.join("; "))
     update("stopped", { cleanup: "complete", cleanupError: undefined })
   }

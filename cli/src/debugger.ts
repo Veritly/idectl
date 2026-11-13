@@ -137,7 +137,7 @@ export function debuggerClient(opts: Options) {
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }
-    if (ide.id === "rustrover" && name === "step_over") {
+    if (ide.id === "rustrover" && ["step_over", "step_out"].includes(name)) {
       const sessions = rows(content(await rpc(ide.port, "tools/call", {
         name: "list_debug_sessions", arguments: { project_path: args.project_path },
       }, timeout)), "sessions")
@@ -145,9 +145,14 @@ export function debuggerClient(opts: Options) {
       const configuration = selected ? field(selected, ["runConfigurationName", "name"]) : undefined
       if (!configuration) throw new Error("Cannot identify the selected Rust debug configuration; check debug sessions")
       const client = await native(ide)
-      return content(await client.call("veritly_debug_step_over", { configuration, projectPath: args.project_path }, timeout))
+      return content(await client.call("veritly_debug_step", { configuration, action: name, projectPath: args.project_path }, timeout))
     }
-    return content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
+    const result = content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
+    if (["set_breakpoint", "remove_breakpoint"].includes(name)) {
+      const client = await native(ide)
+      await client.call("veritly_save_project", { projectPath: args.project_path }, timeout)
+    }
+    return result
   }
 
   async function configs(ide: Endpoint, target?: string) {
