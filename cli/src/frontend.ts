@@ -2,7 +2,7 @@ import { command, root } from "./core"
 import { tunnel, vars } from "./service"
 import path from "node:path"
 
-await command(["bun", "script/local-k8s.ts", "doctor"], root, 10_000)
+await command(["bun", "script/local-k8s.ts", "doctor"], root, 60_000)
 await tunnel()
 const host = (await command(["kubectl", "get", "service", "kubernetes", "-n", "default", "-o", "jsonpath={.spec.clusterIP}"], root, 3000)).trim()
 if (!host) throw new Error("Kubernetes API service has no cluster IP")

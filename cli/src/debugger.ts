@@ -137,7 +137,7 @@ export function debuggerClient(opts: Options) {
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }
-    if (ide.id === "rustrover" && ["step_over", "step_out"].includes(name)) {
+    if (ide.id === "rustrover" && ["step_over", "step_out", "step_into"].includes(name)) {
       const sessions = rows(content(await rpc(ide.port, "tools/call", {
         name: "list_debug_sessions", arguments: { project_path: args.project_path },
       }, timeout)), "sessions")

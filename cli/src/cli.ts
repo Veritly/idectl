@@ -259,6 +259,10 @@ async function main() {
       const target = args.shift()
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
+      const ext = path.extname(target)
+      const owner = ext === ".rs" ? "rustrover" : [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined
+      if (owner && owner !== ide.id)
+        throw new Error(`${target} belongs in ${owner}, but this selector chose ${ide.id}; use breakpoint set ${target} ${line}${once ? " --once" : ""} --ide ${owner} without --service`)
       const result = await tool(ide, "set_breakpoint", { ...(await input(args)), ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
       print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints (reload the same app page for initial-load requests), then inspect the pause before resuming." } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
@@ -325,8 +329,20 @@ async function main() {
       print(await tool(ide, "stop_debug_session", { session_id: id }))
       return 0
     }
+    const map: Record<string, string> = {
+      configs: "list_run_configurations",
+      sessions: "list_debug_sessions",
+      status: "get_debug_session_status",
+      resume: "resume_execution",
+      pause: "pause_execution",
+      "step-over": "step_over",
+      "step-into": "step_into",
+      "step-out": "step_out",
+      stop: "stop_debug_session",
+    }
     if (action === "commands") {
-      const name = args.shift()?.replaceAll("-", "_")
+      const query = args.shift()
+      const name = query ? map[query] || query.replaceAll("-", "_") : undefined
       if (name && !ide.tools.some((item) => item.name === name)) throw new Error(`unknown debug command ${name}`)
       print(
         ide.tools
@@ -339,17 +355,6 @@ async function main() {
       )
       return 0
     }
-    const map: Record<string, string> = {
-      configs: "list_run_configurations",
-      sessions: "list_debug_sessions",
-      status: "get_debug_session_status",
-      resume: "resume_execution",
-      pause: "pause_execution",
-      "step-over": "step_over",
-      "step-into": "step_into",
-      "step-out": "step_out",
-      stop: "stop_debug_session",
-    }
     if (action && ["step-over", "step-into", "step-out"].includes(action)) {
       const seconds = timeout ? Number(timeout) : 60
       if (!Number.isFinite(seconds) || seconds < 1 || seconds > 60) throw new Error("Step timeout must be 1..60 seconds")
@@ -359,7 +364,9 @@ async function main() {
         ...pause(waited),
         action,
         result,
-        hint: waited.state === "paused"
+        hint: waited.state === "stopped"
+          ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
+          : waited.state === "paused"
           ? "Inspect this frame, step again, or resume; the application remains paused."
           : "The step is still running; check debug status before issuing another step.",
       } : waited)
