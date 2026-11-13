@@ -85,17 +85,21 @@ export async function jetbrains(port: number) {
   }
 }
 
-export async function dispatch(ide: Endpoint, args: string[], opts: { project?: string; timeout?: string; full: boolean; session?: string; frame?: number }) {
-  const project = opts.project
-  const timeout = opts.timeout
-  const full = opts.full
+export async function native(ide: Endpoint) {
   const known = ides.find((item) => item.id === ide.id)
   if (!known || !ide.pid) throw new Error("Cannot identify the selected JetBrains process")
   const port = known.port + 300
   const listener = (await sockets()).find((item) => item.port === port)
   if (!listener || listener.pid !== ide.pid)
     throw new Error(`JetBrains MCP is not listening on ${port} in ${ide.name}; reopen the IDE with veritly-ide open`)
-  const client = await jetbrains(port)
+  return jetbrains(port)
+}
+
+export async function dispatch(ide: Endpoint, args: string[], opts: { project?: string; timeout?: string; full: boolean; session?: string; frame?: number }) {
+  const project = opts.project
+  const timeout = opts.timeout
+  const full = opts.full
+  const client = await native(ide)
   try {
     const tools = await client.tools()
     const action = args.shift()

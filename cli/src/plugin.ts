@@ -6,9 +6,9 @@ import { ides, launcher, object, stamp } from "./core"
 import type { Ide } from "./core"
 import debuggerFiles from "./debugger-plugin.json"
 
-const revision = "10f355e266fb5f21833c99cf064950fdf88a0b1d"
+const revision = "8ee19a9a70831b43feefb93815987bee445692f8"
 // Fingerprint of this revision built with RustRover 263.7307.214.
-const known = "c3926119a87c93bad2d3c10e3ceadfe32eff012ab154281e76495d3b80df7495"
+const known = "831fdb511f53f675e262f4b06d6b809b386fe34d59d0c21df7019682436b0b18"
 const remote = "https://github.com/Veritly/veritly-jetbrains-plugin.git"
 const base = path.join(os.homedir(), ".cache/veritly-ide/plugin")
 const debuggerHash = "cd277059784084db72cbdc7f7072f182df11a37a89e54f29ae5e16f39c89ca84"

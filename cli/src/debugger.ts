@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
+import { native } from "./jetbrains"
 import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection } from "./core"
 import type { Endpoint, Json } from "./core"
 
@@ -135,6 +136,16 @@ export function debuggerClient(opts: Options) {
           `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}; for frontend inspection select the paused Veritly Browser session and inspect before resuming`,
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
+    }
+    if (ide.id === "rustrover" && name === "step_over") {
+      const sessions = rows(content(await rpc(ide.port, "tools/call", {
+        name: "list_debug_sessions", arguments: { project_path: args.project_path },
+      }, timeout)), "sessions")
+      const selected = sessions.find((item) => field(item, ["id", "sessionId"]) === args.session_id)
+      const configuration = selected ? field(selected, ["runConfigurationName", "name"]) : undefined
+      if (!configuration) throw new Error("Cannot identify the selected Rust debug configuration; check debug sessions")
+      const client = await native(ide)
+      return content(await client.call("veritly_debug_step_over", { configuration, projectPath: args.project_path }, timeout))
     }
     return content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
   }
