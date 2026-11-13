@@ -175,18 +175,6 @@ export function debuggerClient(opts: Options) {
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }
-    if (ide.id === "rustrover" && ["step_over", "step_out", "step_into", "resume_execution"].includes(name)) {
-      const sessions = rows(content(await rpc(ide.port, "tools/call", {
-        name: "list_debug_sessions", arguments: { project_path: args.project_path },
-      }, timeout)), "sessions")
-      const selected = sessions.find((item) => field(item, ["id", "sessionId"]) === args.session_id)
-      const configuration = selected ? field(selected, ["runConfigurationName", "name"]) : undefined
-      if (!configuration) throw new Error("Cannot identify the selected Rust debug configuration; check debug sessions")
-      const client = await native(ide)
-      if (name !== "resume_execution")
-        return content(await client.call("veritly_debug_step", { configuration, action: name, projectPath: args.project_path }, timeout))
-      await client.call("veritly_debug_cancel_step", { configuration, projectPath: args.project_path }, timeout)
-    }
     const result = content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
     if (name === "evaluate_expression" && object(result) && object(result.result) && typeof result.result.value === "string" && result.result.value.startsWith("ERROR:")) {
       const error = result.result.value
