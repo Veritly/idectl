@@ -9,8 +9,9 @@ import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
-import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching } from "./session"
+import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
+import { scope as projectScope } from "./project"
 
 const args = process.argv.slice(2)
 
@@ -39,8 +40,8 @@ const selected = option("--project")
 const scope = option("--service")
 if (scope && (explicit && explicit !== "rustrover" || override)) throw new Error("--service selects RustRover; do not combine it with a different IDE or port")
 const context = scope ? sessionContext(scope) : (!explicit || explicit === "rustrover") && args[0] === "breakpoint" && args[1] === "set" && args[2] ? sessionMatching(args[2]) : undefined
-const project = selected || context?.project
-const job = scope && context && (!selected || path.resolve(selected) === context.project)
+const project = selected ? (path.resolve(selected).startsWith(`${root}${path.sep}`) || path.resolve(selected) === root ? projectScope(root, selected).project : path.resolve(selected)) : context?.project
+const job = scope && context && (!selected || project === context.project)
   ? jobs(context.project).find((item) => item.name === service(scope) && ["running", "paused"].includes(String(item.phase)))
   : undefined
 const session = explicitSession || (typeof job?.session === "string" || typeof job?.session === "number" ? String(job.session) : undefined)
@@ -66,7 +67,7 @@ function index() {
 }
 
 
-const debug = debuggerClient({ chosen, override, session: scope ? explicitSession : session, project, configuration: scope && context && (!selected || path.resolve(selected) === context.project) ? service(scope) : undefined })
+const debug = debuggerClient({ chosen, override, session: scope ? explicitSession : session, project, configuration: scope && context && (!selected || project === context.project) ? service(scope) : undefined })
 const { launchedBrowser, endpoints, endpoint, tool, config, launch } = debug
 const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend } = checks(debug, { project, url })
 
@@ -265,6 +266,12 @@ async function main() {
       const owner = ext === ".rs" ? "rustrover" : [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined
       if (owner && owner !== ide.id)
         throw new Error(`${target} belongs in ${owner}, but this selector chose ${ide.id}; use breakpoint set ${target} ${line}${once ? " --once" : ""} --ide ${owner} without --service`)
+      const managed = ide.id === "webstorm" ? sessionOwner() : undefined
+      if (managed) {
+        const current = project || (await attempt(async () => opened(ide))).value
+        if (current !== managed.project)
+          throw new Error(`The managed ${managed.service} browser belongs to ${managed.project}; set frontend breakpoints using ${managed.context.join(" ")}. Shared-source breakpoints belong to this browser project too.`)
+      }
       const opts = await input(args)
       if (condition !== undefined) {
         if (!condition.trim()) throw new Error("--condition requires a nonempty expression")

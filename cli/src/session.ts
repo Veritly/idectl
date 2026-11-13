@@ -47,7 +47,24 @@ export async function browser(name: string) {
   const debug = debuggerClient({ chosen: "webstorm", project: scope(root, "packages/app").project })
   const result = await debug.launchedBrowser(await debug.endpoint())
   if (result.endpoint !== state.browser.endpoint) throw new Error("WebStorm browser does not match the selected managed session")
-  return { ...result, service: name }
+  return { ...result, service: name, ...selector(state) }
+}
+
+function selector(state: Record<string, unknown>) {
+  const project = scope(root, "packages/app").project
+  const context = ["--ide", "webstorm", "--project", project]
+  if (object(state.browser) && typeof state.browser.id === "string") context.push("--session", state.browser.id)
+  return { project, context }
+}
+
+export function owner() {
+  const active = Object.keys(components).flatMap((name) => {
+    const state = context(name).state
+    return state && state.cleanup !== "complete" ? [{ name, state }] : []
+  })
+  if (active.length > 1) throw new Error("Multiple managed sessions own the frontend; inspect and clean up those sessions")
+  if (!active.length) return
+  return { service: active[0].name, ...selector(active[0].state) }
 }
 
 export function matching(file: string) {
@@ -137,7 +154,7 @@ export async function wait(name: string, seconds: number, goal = "ready") {
     if (state.phase === "paused" && goal === "ready") return { ok: false, ...state, hint: "Inspect the paused session or resume it to continue startup." }
     if (state.phase === "ready" && goal === "ready") {
       if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Ready session has no browser endpoint")
-      return { ok: true, ...state, ...preview(state.browser.endpoint) }
+      return { ok: true, ...state, browser: { ...state.browser, ...selector(state) }, ...preview(state.browser.endpoint) }
     }
     if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase, hint: goal === "stopped" ? `Run wait session ${name} --until stopped again; cleanup is still progressing.` : `Run wait session ${name} again; the existing launch is still progressing.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
