@@ -76,6 +76,32 @@ def run(debugger, exe, source):
     process.Continue()
     assert process.GetState() == lldb.eStateExited, 'a completed step must not pause again on resume'
 
+    for action in ('Into', 'Over'):
+        process, thread = launch()
+        frame = thread.GetFrameAtIndex(0)
+        address = next(ins.GetAddress() for ins in frame.GetFunction().GetInstructions(target)
+                       if ins.GetAddress().GetLoadAddress(target) > frame.GetPC()
+                       and ins.GetAddress().GetLineEntry().IsValid()
+                       and ins.GetAddress().GetLineEntry().GetLine() == 0)
+        zero = target.BreakpointCreateByAddress(address.GetLoadAddress(target))
+        pause.SetEnabled(False)
+        process.Continue()
+        assert thread.GetStopReasonDataAtIndex(0) == zero.GetID()
+        assert thread.GetFrameAtIndex(0).GetLineEntry().GetLine() == 0
+        zero.SetEnabled(False)
+        for _ in range(5):
+            veritly_step.step(debugger, thread.GetIndexID(), action)
+            frame = thread.GetFrameAtIndex(0)
+            assert frame.GetLineEntry().GetLine() > 0
+            assert 'load' in frame.GetFunctionName() or 'add' in frame.GetFunctionName(), 'line-zero stepping left the async function'
+            if action == 'Over' or 'add' in frame.GetFunctionName():
+                break
+        else:
+            raise AssertionError('line-zero step-into skipped the workspace helper')
+        process.Kill()
+        target.BreakpointDelete(zero.GetID())
+        pause.SetEnabled(True)
+
     process, thread = launch()
     thread.StepOut()
     assert 'future.rs' in str(thread.GetFrameAtIndex(0).GetLineEntry().GetFileSpec())

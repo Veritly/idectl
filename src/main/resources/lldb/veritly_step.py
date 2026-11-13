@@ -40,6 +40,8 @@ def step(debugger, index, plan):
 
 
 class Over:
+    enter = False
+
     def __init__(self, plan, _):
         self.plan = plan
         plans.append(plan)
@@ -47,10 +49,22 @@ class Over:
         line = frame.GetLineEntry()
         start = line.GetStartAddress()
         size = line.GetEndAddress().GetFileAddress() - start.GetFileAddress()
-        if not line.IsValid() or line.GetLine() == 0 or size <= 0:
+        if not line.IsValid():
             self.child = plan.QueueThreadPlanForStepOut(0)
             return
+        if line.GetLine() == 0 or size <= 0:
+            self.child = self.advance()
+            return
         self.child = self.queue(start, size)
+
+    def advance(self):
+        # Async spills can have line zero inside the current workspace function.
+        # Leaving that frame would silently run past the call being stepped into.
+        error = lldb.SBError()
+        child = self.plan.QueueThreadPlanForStepSingleInstruction(not self.enter, error)
+        if not error.Success():
+            raise RuntimeError(str(error))
+        return child
 
     def queue(self, start, size):
         return self.plan.QueueThreadPlanForStepOverRange(start, size)
@@ -76,8 +90,11 @@ class Over:
             "/rustc/", "/stdlib-local-copy/", "/lib/rustlib/src/rust/library/",
             "/registry/src/", "/git/checkouts/",
         ))
-        if frame.IsValid() and (not line.IsValid() or line.GetLine() == 0 or library):
+        if frame.IsValid() and (not line.IsValid() or library):
             self.child = self.plan.QueueThreadPlanForStepOut(0)
+            return False
+        if frame.IsValid() and line.GetLine() == 0:
+            self.child = self.advance()
             return False
         self.plan.SetPlanComplete(True)
         return True
@@ -97,5 +114,7 @@ class Out(Over):
 
 
 class Into(Over):
+    enter = True
+
     def queue(self, start, size):
         return self.plan.QueueThreadPlanForStepInRange(start, size)
