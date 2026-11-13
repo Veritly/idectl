@@ -5,9 +5,27 @@ import os from "node:os"
 import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
 import { rows, record, selection } from "../src/core"
-import { wait } from "../src/job"
+import { wait, enqueue, recover } from "../src/job"
+import { context, up } from "../src/session"
+import { Repair } from "../src/core"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
+
+test("blocks unsupported worker launches before changing managed state and requests repair", async () => {
+  const before = context("governor").state
+  expect(() => up("governor")).toThrow(Repair)
+  expect(() => enqueue("Veritly AI Governor", "/unused")).toThrow(Repair)
+  expect(() => recover("Veritly AI Governor", "/unused")).toThrow(Repair)
+  expect(context("governor").state).toEqual(before)
+  const proc = Bun.spawn(["bun", cli, "debug", "up", "governor", "--json"], { stdout: "pipe", stderr: "pipe" })
+  const output = new Response(proc.stdout).text()
+  const error = await new Response(proc.stderr).json()
+  expect(await proc.exited).toBe(1)
+  expect(await output).toBe("")
+  expect(error).toMatchObject({ code: "environment_repair_required", retryable: false })
+  expect(error.hint).toContain("Stop this task")
+  expect(context("governor").state).toEqual(before)
+})
 
 test("startup selection errors are JSON and explain frontend debugger selection", async () => {
   for (const args of [["--service"], ["--service", "unknown"], ["--service", "frontend"]]) {

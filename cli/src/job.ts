@@ -1,6 +1,6 @@
 import fs from "node:fs"
 import path from "node:path"
-import { root, object, stamp } from "./core"
+import { root, object, stamp, Repair } from "./core"
 import { localHealth } from "./service"
 
 const base = "/dev/shm/veritly-ide-jobs"
@@ -9,6 +9,11 @@ const services: Record<string, string> = { data: "Veritly Data", server: "Veritl
 
 export function service(name: string) {
   return services[name] || name
+}
+
+export function launchable(name: string) {
+  if (service(name) === services.governor)
+    throw new Repair("Governor requires exclusive queue-worker replacement before local execution. The launcher does not yet manage Telepresence replacement and restoration; an HTTP intercept leaves the cluster worker active. No new launch was started.")
 }
 
 export function managed(name: string) {
@@ -82,6 +87,7 @@ export function jobs(project: string) {
 }
 
 export function enqueue(name: string, project: string) {
+  launchable(name)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   const folder = dir(name, project)
   if (fs.existsSync(folder)) {
@@ -102,6 +108,7 @@ export function enqueue(name: string, project: string) {
 }
 
 export function recover(name: string, project: string) {
+  launchable(name)
   const folder = dir(name, project)
   const state = read(folder)
   if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) === state.token)

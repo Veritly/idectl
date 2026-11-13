@@ -3,6 +3,12 @@ import os from "node:os"
 import path from "node:path"
 
 export type Json = Record<string, unknown>
+
+export class Repair extends Error {
+  readonly code = "environment_repair_required"
+  readonly retryable = false
+  readonly hint = "Stop this task and request environment repair; do not retry the launch or bypass the CLI."
+}
 export type Ide = {
   id: string
   name: string

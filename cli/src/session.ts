@@ -3,7 +3,7 @@ import path from "node:path"
 import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
 import { debuggerClient } from "./debugger"
-import { jobs, enqueue, cancel, service } from "./job"
+import { jobs, enqueue, cancel, service, launchable } from "./job"
 import { vars, routing, frontendRoute, routeStatus } from "./service"
 import { login } from "./auth"
 import { close as closeBrowser } from "./browser"
@@ -121,6 +121,7 @@ function save(folder: string, state: Record<string, unknown>) {
 }
 
 export function up(name: string) {
+  launchable(name)
   const folder = dir(name)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   const lock = path.join(base, "launch.lock")

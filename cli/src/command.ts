@@ -7,7 +7,7 @@ import { debuggerClient } from "./debugger"
 import { doctor } from "./doctor"
 import { checks } from "./checks"
 import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
-import { enqueue, jobs, cancel, recover, wait, service, managed } from "./job"
+import { enqueue, jobs, cancel, recover, wait, service, managed, launchable } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
@@ -228,6 +228,7 @@ export async function main() {
   if (group === "route" || group === "unroute") {
     const name = args.shift()
     if (!name) throw new Error("route expects a service name")
+    if (group === "route") launchable(name)
     print(await routing(group === "route", name))
     return 0
   }
