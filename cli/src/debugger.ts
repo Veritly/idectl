@@ -2,7 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { native } from "./jetbrains"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection, stamp } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection, stamp, quote } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
@@ -141,7 +141,7 @@ export function debuggerClient(opts: Options) {
         name: "list_breakpoints", arguments: { project_path: args.project_path },
       }, timeout)), "breakpoints")
       const existing = all.find((row) => row.temporary === true && row.file === args.file_path && row.line === args.line)
-      if (existing) {
+      if (existing || args.temporary === true) {
         const sessions = rows(content(await rpc(ide.port, "tools/call", {
           name: "list_debug_sessions", arguments: { project_path: args.project_path },
         }, timeout)), "sessions").filter((row) => row.state === "paused")
@@ -151,8 +151,11 @@ export function debuggerClient(opts: Options) {
           const status = content(await rpc(ide.port, "tools/call", {
             name: "get_debug_session_status", arguments: { project_path: args.project_path, session_id: id, include_variables: false, include_source_context: false, max_stack_frames: 1 },
           }, timeout))
-          if (object(status) && object(status.breakpointHit) && status.breakpointHit.breakpointId === existing.id)
-            throw new Error(`This one-shot breakpoint already hit and will be removed on resume; inspect the pause, run debug resume --ide ${ide.id} --session ${id}, then set a fresh breakpoint before triggering a new action`)
+          if (object(status) && (
+            object(status.breakpointHit) && existing && status.breakpointHit.breakpointId === existing.id ||
+            object(status.currentLocation) && status.currentLocation.file === args.file_path && status.currentLocation.line === args.line
+          ))
+            throw new Error(`Execution is already paused at this one-shot location; inspect it, resume or step away with --ide ${ide.id}${typeof args.project_path === "string" ? ` --project ${quote(args.project_path)}` : ""} --session ${id}, then arm a fresh breakpoint before triggering a new action. Removing and recreating it while paused can stop on the same request again.`)
         }
       }
     }
@@ -172,7 +175,7 @@ export function debuggerClient(opts: Options) {
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }
-    if (ide.id === "rustrover" && ["step_over", "step_out", "step_into"].includes(name)) {
+    if (ide.id === "rustrover" && ["step_over", "step_out", "step_into", "resume_execution"].includes(name)) {
       const sessions = rows(content(await rpc(ide.port, "tools/call", {
         name: "list_debug_sessions", arguments: { project_path: args.project_path },
       }, timeout)), "sessions")
@@ -180,11 +183,20 @@ export function debuggerClient(opts: Options) {
       const configuration = selected ? field(selected, ["runConfigurationName", "name"]) : undefined
       if (!configuration) throw new Error("Cannot identify the selected Rust debug configuration; check debug sessions")
       const client = await native(ide)
-      return content(await client.call("veritly_debug_step", { configuration, action: name, projectPath: args.project_path }, timeout))
+      if (name !== "resume_execution")
+        return content(await client.call("veritly_debug_step", { configuration, action: name, projectPath: args.project_path }, timeout))
+      await client.call("veritly_debug_cancel_step", { configuration, projectPath: args.project_path }, timeout)
     }
     const result = content(await rpc(ide.port, "tools/call", { name, arguments: args }, timeout))
-    if (name === "evaluate_expression" && object(result) && object(result.result) && typeof result.result.value === "string" && result.result.value.startsWith("ERROR:"))
-      return { ...result, result: { ...result.result, error: result.result.value, hint: "This frame cannot resolve the expression; at function entry, step-over to an executable statement and inspect the current location before evaluating parameters." } }
+    if (name === "evaluate_expression" && object(result) && object(result.result) && typeof result.result.value === "string" && result.result.value.startsWith("ERROR:")) {
+      const error = result.result.value
+      const hint = error.includes("not a scalar type")
+        ? "The native evaluator cannot compare this value directly; use supported scalar fields in conditions, then inspect the actual local to confirm the intended request."
+        : error.includes("UnsupportedFunction") || error.includes("extra tokens at EOF")
+          ? "The native evaluator does not support this call or syntax; inspect stored locals and simple fields instead of executing methods or closures."
+          : "This frame cannot resolve the expression; at function entry, step-over to an executable statement and inspect the current location before evaluating parameters."
+      return { ...result, result: { ...result.result, error, hint } }
+    }
     if (["set_breakpoint", "remove_breakpoint"].includes(name)) {
       const client = await native(ide)
       await client.call("veritly_save_project", { projectPath: args.project_path }, timeout)

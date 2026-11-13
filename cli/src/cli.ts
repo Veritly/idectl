@@ -279,7 +279,14 @@ async function main() {
         opts.condition = condition
       }
       const result = await tool(ide, "set_breakpoint", { ...opts, ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
-      print(object(result) ? { ...result, binding: "unknown", bindingNote: "IDE acceptance does not prove breakpoint binding; a hit verifies it", hint: "Trigger the action after setting breakpoints; adding a breakpoint while paused does not advance execution, so resume or step to it and inspect the next pause before judging the request." } : result)
+      print(object(result) ? {
+        ...result,
+        binding: "unknown",
+        bindingNote: "IDE acceptance does not prove binding or runtime condition evaluation; inspect the paused location and locals to identify the request.",
+        hint: opts.condition === undefined
+          ? "An unconditional breakpoint can catch background work; use --condition EXPRESSION to narrow the request, then trigger the action and inspect the pause."
+          : "Trigger the action after setting breakpoints; adding a breakpoint while paused does not advance execution, so resume or step to it and inspect the next pause before judging the request.",
+      } : result)
     } else if (action === "list") print(await tool(ide, "list_breakpoints"))
     else if (action === "remove") {
       const id = args.shift()
@@ -382,7 +389,7 @@ async function main() {
         hint: waited.state === "stopped"
           ? "The debugger reported this session stopped; check debug sessions and debug jobs with the same selector before relaunching."
           : waited.state === "paused"
-          ? "Inspect this frame, step again, or resume; the application remains paused."
+          ? "Inspect this frame, step again, or resume; async and inline calls can revisit a source line before advancing."
           : "The step is still running; check debug status before issuing another step.",
       } : waited)
     } else if (action === "resume") {
