@@ -11,7 +11,7 @@ const base = path.join(os.homedir(), ".cache/idectl/plugin")
 const revision = sources(plugin)
 const debuggerHash = "cd277059784084db72cbdc7f7072f182df11a37a89e54f29ae5e16f39c89ca84"
 const debuggerUrl = "https://plugins.jetbrains.com/files/29233/1213010/jetbrains-debugger-mcp-plugin-5.4.0.zip"
-const patched = "fb3f688b35f754d26992185f0c278867a8ac2fde9dab1fca67afa6f49b91e905"
+const patched = "b788404ccdb2cf491211da880674909fc583cad3f51b0752df769e20107d1b68"
 const debuggerJar = "lib/jetbrains-debugger-mcp-plugin-5.4.0.jar"
 
 function files(dir: string): string[] {
