@@ -102,6 +102,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     services: targets.map((item) => ({
       id: item.id,
       workload: item.workload,
+      source: item.project,
       mode: item.mode,
       port: fs.existsSync(cfg.env) ? port(item) : undefined,
     })),
