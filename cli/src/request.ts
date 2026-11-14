@@ -2,9 +2,10 @@ import fs from "node:fs"
 import path from "node:path"
 import { root, object, stamp } from "./core"
 import { context } from "./session"
-import { clusterTarget } from "./service"
+import { adapter } from "./adapter"
+import { service, shm } from "./config"
 
-const base = "/dev/shm/veritly-ide-requests"
+const base = shm("requests")
 
 function folder(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id)) throw new Error("Invalid request ID")
@@ -28,7 +29,7 @@ export async function start(name: string, route: string, seconds?: number) {
   if (!route.startsWith("/") || route.startsWith("//") || route.includes("#")) throw new Error("Request path must begin with a single / and contain no fragment")
   const state = context(name).state
   if (!state || state.phase !== "ready" || typeof state.created !== "number") throw new Error(`Start and wait for the managed ${name} session before sending a request`)
-  const origin = new URL(await clusterTarget(name))
+  const origin = new URL(await adapter.url(service(name)))
   const target = new URL(route, origin)
   if (target.origin !== origin.origin) throw new Error("Request must target the selected cluster Service")
   const id = crypto.randomUUID()

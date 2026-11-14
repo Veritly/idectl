@@ -1,4 +1,5 @@
 import { sockets, stamp } from "./core"
+import { cfg } from "./config"
 
 type Json = Record<string, unknown>
 
@@ -7,7 +8,7 @@ function object(value: unknown): value is Json {
 }
 
 export function mounted(value: Json) {
-  return value.mount === "complete" && value.root === true && typeof value.elements === "number" && value.elements > 0
+  return value.mounted === true
 }
 
 export function errors(rows: { text: string; time: number; source: string }[]) {
@@ -99,7 +100,7 @@ export async function inspect(endpoint: string, url: string) {
     await opened
     await send(1, "Log.enable")
     const value = await send(2, "Runtime.evaluate", {
-      expression: `({document:document.readyState,mount:document.documentElement.dataset.veritlyMount || null,root:!!document.getElementById("root"),elements:document.getElementById("root")?.childElementCount || 0})`,
+      expression: `({document:document.readyState,mounted:Boolean(${cfg.frontend.mounted}),elements:document.body?.querySelectorAll("*").length || 0})`,
       returnByValue: true,
     })
     if (!object(value) || !object(value.result) || !object(value.result.value)) throw new Error("Browser page state is unavailable")

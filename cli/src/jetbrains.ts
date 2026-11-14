@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url"
 import { root, ides, object, sockets, opened, input, content, print, attempt } from "./core"
 import type { Endpoint, Json } from "./core"
 import { runtime } from "./setup"
-import { tunnel } from "./service"
 
 export const aliases: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
 
@@ -221,7 +220,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
           await Bun.sleep(500)
         }
       }
-      const env = await runtime(values.configurationName, tunnel)
+      const env = await runtime(values.configurationName)
       if (env) {
         if (selected.supportsDynamicLaunchOverrides !== true) throw new Error(`${values.configurationName} does not support per-launch environment overrides`)
         values.envs = env

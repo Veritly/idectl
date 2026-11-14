@@ -46,22 +46,18 @@ test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after
     while (!fs.existsSync(file) && Date.now() < deadline) await Bun.sleep(50)
     if (!fs.existsSync(file)) throw new Error("Chromium did not start its debug endpoint")
     const endpoint = `http://127.0.0.1:${fs.readFileSync(file, "utf8").split("\n")[0]}`
-    await inject(endpoint, url, "test-session")
+    await inject(endpoint, url, [{ name: "veritly-session", value: "test-session" }])
     const limit = Date.now() + 3000
     while (!state.authenticated && Date.now() < limit) await Bun.sleep(50)
     expect(state.authenticated).toBe(true)
     await expect(tab(endpoint, "http://127.0.0.1:1/")).rejects.toThrow("may have redirected for sign-in")
     const first = await inspect(endpoint, url)
     expect(mounted(first.page)).toBe(false)
-    expect(first.page.mount).toBeNull()
-    expect(first.page.elements).toBe(0)
     state.mounted = true
     const until = Date.now() + 3000
     while (Date.now() < until) {
       const next = await inspect(endpoint, url)
-      if (next.page.mount === "complete") {
-        expect(mounted(next.page)).toBe(true)
-        expect(next.page.elements).toBe(1)
+      if (mounted(next.page)) {
         const token = stamp(proc.pid)
         if (!token) throw new Error("Browser process disappeared")
         await close(endpoint, proc.pid, `${token}-different`)

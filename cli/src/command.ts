@@ -1,12 +1,14 @@
 import path from "node:path"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
-import { root, file, namespace, ides, specs, object, print, attempt, launcher, input, opened, rows, field } from "./core"
+import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
+import { cfg, name as bin, service as find } from "./config"
+import { adapter } from "./adapter"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
 import { doctor } from "./doctor"
 import { checks } from "./checks"
-import { spec, tunnel, cluster, kill, start, stop, state, routing } from "./service"
+import { kill, preflight, attach, detach } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed, launchable } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
@@ -45,8 +47,7 @@ const job = scope && context && (!selected || project === context.project)
   ? jobs(context.project).find((item) => item.name === service(scope) && ["running", "paused"].includes(String(item.phase)))
   : undefined
 const session = explicitSession || (typeof job?.session === "string" || typeof job?.session === "number" ? String(job.session) : undefined)
-const web = args[0] === "debug" && ["start", "cancel"].includes(args[1] || "") && args[2] === "frontend" ||
-  ["start", "stop", "status"].includes(args[0] || "") && args[1] === "frontend"
+const web = args[0] === "debug" && ["start", "cancel"].includes(args[1] || "") && args[2] === "frontend"
 const chosen = explicit || (scope || args[0] === "breakpoint" && args[1] === "set" && path.extname(args[2] || "") === ".rs" ? "rustrover" : web ? "webstorm" : undefined)
 const timeout = option("--timeout")
 const until = option("--until")
@@ -57,7 +58,7 @@ const once = flag("--once")
 const condition = option("--condition")
 flag("--json")
 const url = option("--url")
-const attach = option("--attach")
+const remote = option("--attach")
 
 function index() {
   if (!frame) return 0
@@ -71,32 +72,32 @@ const debug = debuggerClient({ chosen, override, session: scope ? explicitSessio
 const { launchedBrowser, endpoints, endpoint, tool, config, launch } = debug
 const { smoke, readiness, diagnosis, browserSmoke, values, pause, snapshot, frontend } = checks(debug, { project, url })
 
-const usage = `veritly-ide doctor [--ide ID] [--port PORT]
-veritly-ide plugin retry
-veritly-ide ready PATH --url URL
-veritly-ide wait plugin|frontend|data|server|edge|office|gateway|governor [--timeout SECONDS] [--json]
-veritly-ide ides
-veritly-ide connect
-veritly-ide open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
-veritly-ide close PATH | close --project PATH
-veritly-ide services
-veritly-ide start|stop|status frontend [--ide ID]
-veritly-ide route|unroute data|server|edge|office|gateway|governor
-veritly-ide breakpoint set FILE LINE [--once] [--condition EXPRESSION] [JSON] | list | remove ID
-veritly-ide debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
-veritly-ide debug up|down data|server|edge|office|gateway|governor
-veritly-ide debug request SERVICE /PATH [--timeout SECONDS]
-veritly-ide wait session SERVICE [--until ready|stopped] [--timeout SECONDS] [--json]
-veritly-ide wait request ID [--timeout SECONDS] [--json]
-veritly-ide debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
-veritly-ide debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
-veritly-ide debug commands [TOOL] | TOOL [JSON|-]
-veritly-ide mcp tools | call TOOL [JSON|-]
-veritly-ide jetbrains tools [FILTER] | schema TOOL | call TOOL [JSON|-] [--timeout SECONDS]
-veritly-ide jetbrains status | configs | output [SESSION]
-veritly-ide test breakpoint
-veritly-ide test browser --project PATH --url URL
+const names = Object.keys(cfg.services).join("|")
+const usage = `${bin} doctor [--ide ID] [--port PORT]
+${bin} plugin retry
+${bin} ready PATH --url URL
+${bin} wait plugin|frontend|${names} [--timeout SECONDS] [--json]
+${bin} ides
+${bin} connect
+${bin} open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
+${bin} close PATH | close --project PATH
+${bin} route|unroute frontend|${names}
+${bin} breakpoint set FILE LINE [--once] [--condition EXPRESSION] [JSON] | list | remove ID
+${bin} debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
+${bin} debug up|down ${names}
+${bin} debug request SERVICE /PATH [--timeout SECONDS]
+${bin} wait session SERVICE [--until ready|stopped] [--timeout SECONDS] [--json]
+${bin} wait request ID [--timeout SECONDS] [--json]
+${bin} debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
+${bin} debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
+${bin} debug commands [TOOL] | TOOL [JSON|-]
+${bin} mcp tools | call TOOL [JSON|-]
+${bin} jetbrains tools [FILTER] | schema TOOL | call TOOL [JSON|-] [--timeout SECONDS]
+${bin} jetbrains status | configs | output [SESSION]
+${bin} test breakpoint
+${bin} test browser --project PATH --url URL
 
+Services and the ${adapter.type} environment come from ${path.join(cfg.root, "idectl.json")}.
 Use --service NAME for a Rust service's project and debugger, --project PATH to select its recorded IDE, --session ID for a specific session, and --frame N for a stack frame. Rust breakpoint files select RustRover automatically.
 At a frontend pause, select the browser session and inspect variables before resuming; raw MCP tool names use underscores.
 Attach managed browsers with T3 preview_status then preview_open using preview.arguments; available:false with tabId:null means open the preview, not an attachment failure.
@@ -198,48 +199,27 @@ export async function main() {
     return 0
   }
   if (group === "connect") {
-    await tunnel()
-    print({ ok: true, context: await cluster(), namespace })
+    await preflight()
+    print({ ok: true, adapter: adapter.type, ...(await adapter.connect()) })
     return 0
   }
   if (group === "open" || group === "launch") {
-    const value = await lifecycle({ project, chosen, attach, url, tunnel, endpoints, tool, kill }).open(args)
+    const value = await lifecycle({ project, chosen, attach: remote, url, endpoints, tool, kill }).open(args)
     print(value)
     if (value.phase === "plugin_failed") return 1
     return value.ok ? 0 : 2
   }
   if (group === "close") {
-    const value = await lifecycle({ project, chosen, attach, url, tunnel, endpoints, tool, kill }).close(args)
+    const value = await lifecycle({ project, chosen, attach: remote, url, endpoints, tool, kill }).close(args)
     print(value)
     return value.ok ? 0 : 2
   }
-  if (group === "services") {
-    print(
-      specs.map((item) => ({
-        id: item.id,
-        workload: item.workload,
-        mode: "run",
-        key: item.key,
-        env: file,
-      })),
-    )
-    return 0
-  }
   if (group === "route" || group === "unroute") {
     const name = args.shift()
-    if (!name) throw new Error("route expects a service name")
-    if (group === "route") launchable(name)
-    print(await routing(group === "route", name))
-    return 0
-  }
-  if (["start", "stop", "status"].includes(group)) {
-    const item = spec(args.shift())
-    if (group === "start") {
-      const value = await start(item, endpoint)
-      print(value)
-      return value.ok ? 0 : 1
-    }
-    print(group === "stop" ? await stop(item) : await state(item))
+    if (!name || args.length) throw new Error(`${group} expects frontend|${names}`)
+    const item = name === "frontend" ? cfg.frontend : find(name)
+    if (group === "route" && item.mode === "replace") launchable(name, false)
+    print(group === "route" ? await attach(item) : await detach(item))
     return 0
   }
   if (group === "mcp") {
@@ -341,12 +321,12 @@ export async function main() {
     }
     if (action === "cancel") {
       const name = args.join(" ").trim()
-      const cfg = name === "frontend" ? "Veritly Frontend" : name === "browser" ? "Veritly Browser" : name
-      if (!cfg) throw new Error("debug cancel requires a configuration name")
+      const target = name === "frontend" ? cfg.frontend.configuration : name === "browser" ? cfg.frontend.browser : name
+      if (!target) throw new Error("debug cancel requires a configuration name")
       const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
-        .filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)))
-      if (!sessions.length) { print({ ok: true, name: cfg, phase: "stopped" }); return 0 }
-      if (sessions.length !== 1) throw new Error(`Multiple sessions for ${cfg}; select --session ID and use debug stop`)
+        .filter((item) => item.runConfigurationName === target && ["running", "paused"].includes(String(item.state)))
+      if (!sessions.length) { print({ ok: true, name: target, phase: "stopped" }); return 0 }
+      if (sessions.length !== 1) throw new Error(`Multiple sessions for ${target}; select --session ID and use debug stop`)
       const id = field(sessions[0], ["id", "sessionId"])
       if (!id) throw new Error("Debug session has no ID")
       print(await tool(ide, "stop_debug_session", { session_id: id }))
@@ -382,7 +362,7 @@ export async function main() {
           .map((item) => ({
             command: typeof item.name === "string" ? item.name.replaceAll("_", "-") : item.name,
             cli: Object.entries(aliases).filter(([, tool]) => tool === item.name)
-              .map(([alias]) => `veritly-ide ${alias.startsWith("breakpoint ") ? "" : "debug "}${alias}`),
+              .map(([alias]) => `${bin} ${alias.startsWith("breakpoint ") ? "" : "debug "}${alias}`),
             description: name ? item.description : undefined,
             inputSchema: name ? item.inputSchema : undefined,
           })),
@@ -517,12 +497,12 @@ export async function main() {
       print(await tool(ide, "evaluate_expression", { expression: `${target} = (${value})`, frame_index: index() }))
     } else if (action === "start") {
       const value = args.join(" ").trim()
-      const name = value === "frontend" ? "Veritly Frontend" : value === "browser" ? "Veritly Browser" : value
+      const name = value === "frontend" ? cfg.frontend.configuration : value === "browser" ? cfg.frontend.browser : value
       if (!name) throw new Error("debug start requires a configuration name")
-      const cfg = await config(ide, name)
-      const prior = ide.id === "webstorm" && cfg.typeId === "JavascriptDebugType" ? (await debug.browserProcesses(ide)).map((row) => row.pid) : undefined
+      const run = await config(ide, name)
+      const prior = ide.id === "webstorm" && run.typeId === "JavascriptDebugType" ? (await debug.browserProcesses(ide)).map((row) => row.pid) : undefined
       const result = await launch(ide, name)
-      if (ide.id === "webstorm" && cfg.typeId === "JavascriptDebugType") {
+      if (ide.id === "webstorm" && run.typeId === "JavascriptDebugType") {
         const browser = await launchedBrowser(ide, { prior })
         print({ ...(object(result) ? result : { result }), browser })
       } else print(result)

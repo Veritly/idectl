@@ -7,13 +7,13 @@ import { jetbrains } from "./jetbrains"
 import type { Json, Endpoint } from "./core"
 import { settings } from "./setup"
 import { ensure } from "./plugin"
+import { cfg as config } from "./config"
 
 type Context = {
   project?: string
   chosen?: string
   attach?: string
   url?: string
-  tunnel: () => Promise<unknown>
   endpoints: () => Promise<Endpoint[]>
   tool: (ide: Endpoint, name: string, input?: Json, timeout?: number) => Promise<unknown>
   kill: (pid: number) => void
@@ -24,7 +24,6 @@ export function lifecycle(ctx: Context) {
   const chosen = ctx.chosen
   const attach = ctx.attach
   const url = ctx.url
-  const tunnel = ctx.tunnel
   const endpoints = ctx.endpoints
   const tool = ctx.tool
   const kill = ctx.kill
@@ -169,13 +168,13 @@ export function lifecycle(ctx: Context) {
           url &&
           !runs.some(
             (item) =>
-              item.name === "Veritly Browser" &&
+              item.name === config.frontend.browser &&
               (attach
                 ? item.typeId === "ChromiumRemoteDebugType"
                 : String(item.description).includes(new URL(url).href)),
           )
         )
-          throw new Error("Waiting for WebStorm to load Veritly Browser; reopen this project if its configuration is stale")
+          throw new Error(`Waiting for WebStorm to load ${config.frontend.browser}; reopen this project if its configuration is stale`)
         return live
       })
       if (ready.ok) {
@@ -205,7 +204,7 @@ export function lifecycle(ctx: Context) {
           port: ide.port,
           log,
           context: ["--ide", ide.id, "--project", cfg.project],
-          configuration: url ? "Veritly Browser" : undefined,
+          configuration: url ? config.frontend.browser : undefined,
           url: url ? new URL(url).href : undefined,
           endpoint: attach ? address(attach).origin : undefined,
         }

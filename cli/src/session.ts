@@ -4,20 +4,16 @@ import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
 import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service, launchable } from "./job"
-import { vars, routing, frontendRoute, routeStatus } from "./service"
+import { vars, preflight, attach as link, detach as unlink } from "./service"
+import { adapter } from "./adapter"
+import { cfg, known, name as bin, service as find, shm } from "./config"
 import { login } from "./auth"
 import { close as closeBrowser } from "./browser"
 
-const components: Record<string, string> = {
-  data: "packages/veritly-data/runtime",
-  server: "packages/veritly-server",
-  edge: "packages/veritly-edge/server",
-  office: "packages/veritly-office/server",
-  gateway: "packages/ai/gateway",
-  governor: "packages/ai/governor",
-}
-const base = "/dev/shm/veritly-ide-sessions"
-const cli = path.join(root, "script/veritly-ide")
+const components = Object.fromEntries(Object.values(cfg.services).map((item) => [item.id, item.project]))
+const base = shm("sessions")
+const cli = [process.execPath, path.join(import.meta.dir, "cli.ts")]
+const front = cfg.frontend
 
 function dir(name: string) {
   if (!components[name]) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
@@ -34,9 +30,9 @@ function read(folder: string) {
 export function context(name: string) {
   if (name === "frontend") {
     const active = owner()
-    throw new Error(`--service selects a Rust backend; use ${active ? active.context.join(" ") : "--ide webstorm --project packages/app --session ID"} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
+    throw new Error(`--service selects a Rust backend; use ${active ? active.context.join(" ") : `--ide webstorm --project ${front.project} --session ID`} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
   }
-  const key = Object.keys(components).find((item) => item === name || service(item) === name)
+  const key = known(name) ? find(name).id : undefined
   if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
   const folder = dir(key)
   const state = fs.existsSync(folder) ? read(folder) : undefined
@@ -49,14 +45,14 @@ export async function browser(name: string) {
     throw new Error(`Managed browser is not ready; use wait session ${name} --json, or debug up ${name} if no session is active`)
   if (typeof state.pid !== "number" || typeof state.token !== "string" || stamp(state.pid) !== state.token)
     throw new Error(`Managed session supervisor exited; use debug down ${name} to clean up`)
-  const debug = debuggerClient({ chosen: "webstorm", project: scope(root, "packages/app").project })
+  const debug = debuggerClient({ chosen: "webstorm", project: scope(root, front.project).project })
   const result = await debug.launchedBrowser(await debug.endpoint(), { endpoint: state.browser.endpoint })
   if (result.pid !== state.browser.pid || result.token !== state.browser.token) throw new Error("WebStorm browser does not match the selected managed session")
   return { ...result, service: name, ...selector(state) }
 }
 
 function selector(state: Record<string, unknown>) {
-  const project = scope(root, "packages/app").project
+  const project = scope(root, front.project).project
   const context = ["--ide", "webstorm", "--project", project]
   if (object(state.browser) && typeof state.browser.id === "string") context.push("--session", state.browser.id)
   return { project, context }
@@ -89,29 +85,41 @@ export async function blocked(id: string) {
       if (!session) throw new Error("Paused backend session has no ID")
       return {
         session,
-        inspect: `veritly-ide debug stack --service ${active.service} --session ${session}`,
-        resume: `veritly-ide debug resume --service ${active.service} --session ${session}`,
+        inspect: `${bin} debug stack --service ${active.service} --session ${session}`,
+        resume: `${bin} debug resume --service ${active.service} --session ${session}`,
       }
     }),
     hint: "The browser is still running while its managed backend is paused. Inspect the backend using the printed command, resume it when ready, then run debug wait with the browser's same selectors; do not issue another step while the previous step is running.",
   }
 }
 
+function workspace(project: string) {
+  const dirs = ancestors(path.join(root, project)).filter((dir) => {
+    const file = path.join(dir, "Cargo.toml")
+    return fs.existsSync(file) && /^\[workspace\]/m.test(fs.readFileSync(file, "utf8"))
+  })
+  return dirs.at(-1) || path.join(root, project)
+}
+
+function ancestors(dir: string): string[] {
+  if (dir === root || !dir.startsWith(`${root}${path.sep}`)) return []
+  return [dir, ...ancestors(path.dirname(dir))]
+}
+
 export function matching(file: string) {
   const target = path.resolve(root, file)
-  const found = Object.entries(components).filter(([, component]) => {
-    const parts = component.split("/")
-    const source = path.join(root, ...parts.slice(0, parts[1] === "ai" ? 3 : 2))
-    return target.startsWith(`${source}${path.sep}`)
-  })
-  if (found.length !== 1) return
+  const inside = (dir: string) => target.startsWith(`${dir}${path.sep}`)
+  const candidates = Object.keys(components).filter((name) => inside(workspace(components[name])))
   const active = Object.keys(components).filter((name) => {
     const folder = dir(name)
     if (!fs.existsSync(folder)) return false
     return !["stopped", "failed"].includes(String(read(folder).phase))
   })
-  if (active.length && !active.includes(found[0][0])) return
-  return context(found[0][0])
+  const live = candidates.filter((name) => active.includes(name))
+  const direct = candidates.filter((name) => inside(path.join(root, components[name])))
+  const found = live.length === 1 ? live[0] : direct.length === 1 ? direct[0] : candidates.length === 1 ? candidates[0] : undefined
+  if (!found || (active.length && !active.includes(found))) return
+  return context(found)
 }
 
 function save(folder: string, state: Record<string, unknown>) {
@@ -121,7 +129,7 @@ function save(folder: string, state: Record<string, unknown>) {
 }
 
 export function up(name: string) {
-  launchable(name)
+  launchable(name, true)
   const folder = dir(name)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   const lock = path.join(base, "launch.lock")
@@ -188,7 +196,7 @@ export async function wait(name: string, seconds: number, goal = "ready") {
     if (state.phase === "stopping" && goal === "ready") return { ok: false, ...state, hint: `Cleanup was requested; wait session ${name} --until stopped before starting another session.` }
     if (state.phase === "ready" && goal === "ready") {
       if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Ready session has no browser endpoint")
-      return { ok: true, ...state, browser: { ...state.browser, ...selector(state) }, ...preview(state.browser.endpoint), next: "Set breakpoints and trigger the app action; Telepresence keeps cluster pods running while routing intercepted traffic to the IDE process. Run debug down only when finished." }
+      return { ok: true, ...state, browser: { ...state.browser, ...selector(state) }, ...preview(state.browser.endpoint), next: `Set breakpoints and trigger the app action; the ${adapter.type} adapter routes ${name}'s traffic to the IDE process${find(name).mode === "replace" ? " and keeps its cluster copy stopped" : ""}. Run debug down only when finished.` }
     }
     if (Date.now() >= until) return { ok: false, ...state, phase: "waiting", stage: state.phase, hint: goal === "stopped" ? `Run wait session ${name} --until stopped again; cleanup is still progressing.` : `Run wait session ${name} again; the existing launch is still progressing.` }
     await Bun.sleep(Math.min(250, until - Date.now()))
@@ -196,7 +204,7 @@ export async function wait(name: string, seconds: number, goal = "ready") {
 }
 
 async function call(args: string[]) {
-  const proc = Bun.spawn([cli, ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([...cli, ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   const output = new Response(proc.stdout).text()
   const error = new Response(proc.stderr).text()
   const code = await proc.exited
@@ -217,8 +225,9 @@ async function worker(name: string, cleanup: boolean) {
   Object.assign(state, { pid: process.pid, token })
   const update = (phase: string, extra: Record<string, unknown> = {}) => { Object.assign(state, extra, { phase }); save(folder, state) }
   const stopped = () => fs.existsSync(path.join(folder, "stop"))
-  const web = scope(root, "packages/app").project
-  const rust = scope(root, components[name]).project
+  const item = find(name)
+  const web = scope(root, front.project).project
+  const rust = scope(root, item.project).project
   const debug = debuggerClient({ chosen: "webstorm", project: web })
   const webarg = ["--ide", "webstorm", "--project", web]
   const rustarg = ["--ide", "rustrover", "--project", rust]
@@ -255,7 +264,7 @@ async function worker(name: string, cleanup: boolean) {
     const item = state[key]
     if (!object(item) || item.owned !== true) return
     if (typeof item.id !== "string") {
-      const cfg = key === "browser" ? "Veritly Browser" : "Veritly Frontend"
+      const cfg = key === "browser" ? front.browser : front.configuration
       const active = (await sessions()).filter((row) => row.runConfigurationName === cfg && ["running", "paused"].includes(String(row.state)))
       const prior = Array.isArray(item.prior) ? item.prior : undefined
       const created = prior ? active.filter((row) => !prior.includes(field(row, ["id", "sessionId"]))) : []
@@ -290,48 +299,55 @@ async function worker(name: string, cleanup: boolean) {
     state[key] = undefined
     save(folder, state)
   }
+  async function attach(phase: string) {
+    update(phase, { route: { phase: "creating" } })
+    const value = await link(item)
+    state.route = { owned: value.created, ids: value.ids, mode: item.mode }
+    save(folder, state)
+  }
   async function clean() {
     update("stopping", { cleanup: "running" })
     const errors: string[] = []
     const attempt = async (run: () => Promise<void>) => {
       try { await run() } catch (err) { errors.push(err instanceof Error ? err.message : String(err)) }
     }
-    await attempt(async () => {
+    const unroute = async () => {
       if (!object(state.route)) return
       if (state.route.phase === "creating") {
-        if (await routeStatus(name)) throw new Error("Intercept creation outcome is unknown; inspect Telepresence before cleanup")
+        if (await adapter.routed(item)) await unlink(item)
         state.route = undefined
         save(folder, state)
         return
       }
       if (state.route.owned !== true) { state.route = undefined; save(folder, state); return }
-      const current = await routeStatus(name)
-      if (current && JSON.stringify(current.ids) !== JSON.stringify(state.route.ids)) throw new Error("The intercept changed; it was preserved")
-      if (current) await routing(false, name)
+      const current = await adapter.routed(item)
+      if (current && JSON.stringify(current.ids) !== JSON.stringify(state.route.ids)) throw new Error("The attachment changed; it was preserved")
+      if (current) await unlink(item)
       state.route = undefined
       save(folder, state)
-    })
+    }
+    if (item.mode !== "replace") await attempt(unroute)
     await attempt(async () => {
       if (!object(state.frontendRoute)) return
       if (state.frontendRoute.phase === "creating") {
-        if (await routeStatus("frontend")) throw new Error("Frontend intercept creation outcome is unknown; inspect Telepresence before cleanup")
+        if (await adapter.routed(front)) await unlink(front)
         state.frontendRoute = undefined
         save(folder, state)
         return
       }
       if (state.frontendRoute.owned !== true) { state.frontendRoute = undefined; save(folder, state); return }
-      const current = await routeStatus("frontend")
-      if (current && JSON.stringify(current.ids) !== JSON.stringify(state.frontendRoute.ids)) throw new Error("The frontend intercept changed; it was preserved")
-      if (current) await frontendRoute(false)
+      const current = await adapter.routed(front)
+      if (current && JSON.stringify(current.ids) !== JSON.stringify(state.frontendRoute.ids)) throw new Error("The frontend attachment changed; it was preserved")
+      if (current) await unlink(front)
       state.frontendRoute = undefined
       save(folder, state)
     })
     await attempt(() => stopWeb("browser"))
     await attempt(async () => {
       if (!object(state.backend) || state.backend.owned !== true) return
-      const item = jobs(rust).find((row) => row.name === service(name))
-      if (item && item.pid !== state.backend.pid) throw new Error("The backend launch changed; it was preserved")
-      if (item && !["stopped", "failed"].includes(String(item.phase))) {
+      const job = jobs(rust).find((row) => row.name === service(name))
+      if (job && job.pid !== state.backend.pid) throw new Error("The backend launch changed; it was preserved")
+      if (job && !["stopped", "failed"].includes(String(job.phase))) {
         cancel(service(name), rust)
         const until = Date.now() + 5000
         while (Date.now() < until) {
@@ -345,6 +361,10 @@ async function worker(name: string, cleanup: boolean) {
       state.backend = undefined
       save(folder, state)
     })
+    if (item.mode === "replace") await attempt(async () => {
+      if (object(state.backend) && state.backend.owned === true) throw new Error(`${item.workload} stays replaced until the local backend stops; retry debug down`)
+      await unroute()
+    })
     await attempt(() => stopWeb("frontend"))
     if (state.frontendStatus || state.backendStatus) await attempt(async () => {
       await Promise.all([webarg, rustarg].map((args) => call(["jetbrains", "call", "veritly_save_project", "{}", ...args])))
@@ -355,39 +375,46 @@ async function worker(name: string, cleanup: boolean) {
 
   try {
     if (cleanup || stopped()) { await clean(); return }
-    const publicUrl = vars().PUBLIC_BASE_URL
-    if (!publicUrl) throw new Error("PUBLIC_BASE_URL is required in .env.local-cluster")
+    const publicUrl = vars()[front.url]
+    if (!publicUrl) throw new Error(`${front.url} is required in ${cfg.env}`)
     const url = new URL("/", publicUrl).href
     update("opening frontend")
-    let opened = await call(["open", "packages/app", "--ide", "webstorm", "--url", url])
+    let opened = await call(["open", front.project, "--ide", "webstorm", "--url", url])
     while (opened.phase === "plugin_installing") {
       if (stopped()) { await clean(); return }
       await Bun.sleep(500)
-      opened = await call(["open", "packages/app", "--ide", "webstorm", "--url", url])
+      opened = await call(["open", front.project, "--ide", "webstorm", "--url", url])
     }
     if (!opened.ok) throw new Error(`WebStorm is ${String(opened.phase)}: ${String(opened.reason || opened.message || "inspect open status")}`)
     update("opening backend")
-    opened = await call(["open", components[name], "--ide", "rustrover"])
+    opened = await call(["open", item.project, "--ide", "rustrover"])
     while (opened.phase === "plugin_installing") {
       if (stopped()) { await clean(); return }
       await Bun.sleep(500)
-      opened = await call(["open", components[name], "--ide", "rustrover"])
+      opened = await call(["open", item.project, "--ide", "rustrover"])
     }
     if (!opened.ok) throw new Error(`RustRover is ${String(opened.phase)}: ${String(opened.reason || opened.message || "inspect open status")}`)
     if (stopped()) { await clean(); return }
-    await startWeb("Veritly Frontend", "frontend")
+    update("connecting environment")
+    await preflight()
+    await adapter.connect()
+    await startWeb(front.configuration, "frontend")
     const existing = jobs(rust).find((row) => row.name === service(name) && !["stopped", "failed"].includes(String(row.phase)))
+    if (item.mode === "replace" && !existing) {
+      if (stopped()) { await clean(); return }
+      await attach("replacing cluster workload")
+    }
     if (existing) state.backend = { pid: existing.pid, owned: false }
     else {
       update("starting backend", { backend: { owned: true, phase: "starting" } })
-      const launch = enqueue(service(name), rust)
+      const launch = enqueue(service(name), rust, true)
       state.backend = { pid: launch.pid, owned: true }
     }
     update("starting services")
     while (true) {
       if (stopped()) { await clean(); return }
       const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), call(["wait", name, ...rustarg, "--timeout", "3"])])
-      if (front.phase === "missing") throw new Error(`Frontend debug session disappeared during startup; inspect ${path.join(root, ".veritly/ide/frontend.log")} for its retained output`)
+      if (front.phase === "missing") throw new Error(`Frontend debug session disappeared during startup; inspect ${path.join(cfg.state, "frontend.log")} for its retained output`)
       if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : "inspect debug jobs"}`)
       if (front.ok && back.ok) break
       const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined
@@ -399,26 +426,13 @@ async function worker(name: string, cleanup: boolean) {
     }
     if (stopped()) { await clean(); return }
     update("routing frontend", { frontendRoute: { phase: "creating" } })
-    const front = await frontendRoute(true)
-    if (!object(front.intercept) || !Array.isArray(front.intercept.intercepts)) throw new Error("IDE returned invalid frontend intercept details")
-    const frontids = front.intercept.intercepts.map((item) => {
-      if (!object(item) || typeof item.id !== "string" || !item.id) throw new Error("Frontend intercept has no stable identifier")
-      return item.id
-    }).sort()
-    state.frontendRoute = { owned: front.created === true, ids: frontids }
+    const routed = await link(front)
+    state.frontendRoute = { owned: routed.created, ids: routed.ids }
     save(folder, state)
     if (stopped()) { await clean(); return }
-    update("routing backend", { route: { phase: "creating" } })
-    const route = await routing(true, name)
-    if (!object(route.intercept) || !Array.isArray(route.intercept.intercepts)) throw new Error("IDE returned invalid intercept details")
-    const ids = route.intercept.intercepts.map((item) => {
-      if (!object(item) || typeof item.id !== "string" || !item.id) throw new Error("Intercept has no stable identifier")
-      return item.id
-    }).sort()
-    state.route = { owned: route.created === true, ids }
-    save(folder, state)
+    if (!object(state.route)) await attach("routing backend")
     if (stopped()) { await clean(); return }
-    await startWeb("Veritly Browser", "browser")
+    await startWeb(front.browser, "browser")
     const ide = await debug.endpoint()
     if (!object(state.browser) || typeof state.browser.endpoint !== "string") throw new Error("Browser launch did not report its endpoint")
     const browser = await debug.launchedBrowser(ide, { endpoint: state.browser.endpoint })

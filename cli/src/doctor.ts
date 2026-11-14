@@ -1,7 +1,9 @@
 import fs from "node:fs"
 import path from "node:path"
-import { root, file, namespace, ides, specs, object, parse, command, attempt, launcher, sockets, opened, selection, projects, quote } from "./core"
-import { cluster, port } from "./service"
+import { root, ides, attempt, launcher, sockets, opened, selection, projects, quote } from "./core"
+import { cfg, name } from "./config"
+import { adapter } from "./adapter"
+import { port, preflight } from "./service"
 import { jetbrains } from "./jetbrains"
 import { inspect } from "./plugin"
 import type { debuggerClient } from "./debugger"
@@ -11,32 +13,11 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   const project = opts.project
   const endpoints = debug.endpoints
   const configs = debug.configs
-  const context = await cluster()
-  const [active, telepresence, kube, service, manager] = await Promise.all([
+  const targets = [cfg.frontend, ...Object.values(cfg.services)]
+  const [active, environment, guard] = await Promise.all([
     endpoints(),
-    attempt(async () => parse(await command(["telepresence", "status", "--format", "json"]))),
-    attempt(() => command(["kubectl", "config", "current-context"])),
-    attempt(async () => parse(await command(["kubectl", "get", "service", "-n", namespace, "-o", "json"]))),
-    attempt(async () =>
-      parse(
-        await command(
-          [
-            "helm",
-            "--kube-context",
-            context,
-            "--namespace",
-            "ambassador",
-            "get",
-            "values",
-            "traffic-manager",
-            "--output",
-            "json",
-          ],
-          root,
-          5_000,
-        ),
-      ),
-    ),
+    adapter.doctor(targets),
+    cfg.preflight ? attempt(preflight) : Promise.resolve(undefined),
   ])
   const selected = chosen
     ? active.find((item) => item.id === chosen)
@@ -47,7 +28,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
       phase: "selection_required",
       reason: "Multiple open IDE projects are expected; choose the project for this task before checking its health.",
       choices: (selected ? [selected] : active).flatMap((ide) => projects(ide).map((project) => ({
-        ide: ide.id, project, command: `./script/veritly-ide doctor --ide ${ide.id} --project ${quote(project)}`,
+        ide: ide.id, project, command: `${name} doctor --ide ${ide.id} --project ${quote(project)}`,
       }))),
       hint: "Run the matching command from choices, then continue your task; selection_required is not an IDE or MCP health failure. For a Rust service, doctor --service NAME selects its project explicitly.",
     }
@@ -75,63 +56,34 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     const live = active.find((item) => item.id === ide.id)
     return { id: ide.id, name: ide.name, installed: Boolean(bin), launcher: bin, active: Boolean(live), endpoint: live }
   })
-  if (!service.ok) throw new Error(`Cannot inspect Kubernetes services: ${service.error}`)
-  if (!object(service.value) || !Array.isArray(service.value.items) || !service.value.items.every(object))
-    throw new Error("Kubernetes returned an invalid service list")
-  const names = service.value.items.map((item) => {
-    if (!object(item.metadata) || typeof item.metadata.name !== "string") throw new Error("Kubernetes returned a service without a name")
-    return item.metadata.name
-  })
-  const daemon =
-    telepresence.ok && object(telepresence.value) && object(telepresence.value.user_daemon)
-      ? telepresence.value.user_daemon
-      : undefined
-  if (daemon?.status === "Connected" && !Array.isArray(daemon.mapped_namespaces))
-    throw new Error("Telepresence returned no mapped namespaces")
-  const mapped = daemon && Array.isArray(daemon.mapped_namespaces) ? daemon.mapped_namespaces : undefined
-  const agent = manager.ok && object(manager.value) && object(manager.value.agent) ? manager.value.agent : undefined
-  const policies = agent && object(agent.mountPolicies) ? agent.mountPolicies : undefined
-  const node =
-    manager.ok && object(manager.value) && object(manager.value.nodeAgent) ? manager.value.nodeAgent : undefined
   const loaded = runs.ok ? runs.value.map((row) => {
     if (typeof row.name !== "string") throw new Error("Debugger returned a run configuration without a name")
     return row.name
   }) : undefined
   const checks = {
-    env: fs.existsSync(file),
+    env: fs.existsSync(cfg.env),
     bun: Boolean(Bun.which("bun")),
-    helm: Boolean(Bun.which("helm")),
-    kubectl: Boolean(Bun.which("kubectl")),
     setsid: Boolean(Bun.which("setsid")),
-    telepresence: Boolean(Bun.which("telepresence")),
-    context: kube.ok && kube.value === context,
-    namespace: service.ok,
-    tunnel: daemon?.status === "Connected" && daemon.kubernetes_context === context && Boolean(mapped?.includes(namespace)),
-    manager:
-      node?.enabled === true &&
-      policies?.["/workspace"] === "Ignore" &&
-      policies?.["/workspace/node_modules"] === "Ignore",
+    ...(guard ? { preflight: guard.ok } : {}),
+    ...environment.checks,
     ide: Boolean(selected),
     jetbrains: bridge.ok,
     plugin: plugin.ok && plugin.value.ok,
     project: runs.ok,
-    services: specs.every((item) => names.includes(item.workload)),
   }
   return {
     ok: Object.values(checks).every(Boolean),
     phase: missing ? "project_not_open" : undefined,
     hint: missing
-      ? `${opts.source && selected ? `Run ./script/veritly-ide open ${quote(opts.source)} --ide ${selected.id}, then repeat doctor` : "Open the selected source component with veritly-ide open, then repeat doctor"}${opts.service ? `; debug up ${opts.service} also opens its required IDE projects automatically` : ""}. An unopened project is a preparation step, not a missing IDE installation.`
+      ? `${opts.source && selected ? `Run ${name} open ${quote(opts.source)} --ide ${selected.id}, then repeat doctor` : `Open the selected source component with ${name} open, then repeat doctor`}${opts.service ? `; debug up ${opts.service} also opens its required IDE projects automatically` : ""}. An unopened project is a preparation step, not a missing IDE installation.`
       : undefined,
     root,
-    env: file,
-    namespace,
-    context,
+    env: cfg.env,
+    adapter: { type: adapter.type, ...environment.details },
+    preflight: guard && !guard.ok ? guard.error : undefined,
     selection: !selected && active.length > 1 ? `Multiple IDEs are active; use --ide to check ${active.map((item) => item.id).join(" or ")}` : undefined,
     checks,
     project: target,
-    tunnel: daemon ? { status: daemon.status, context: daemon.kubernetes_context, namespaces: mapped } : telepresence,
-    manager: manager.ok ? { ready: checks.manager } : manager,
     ides: installed.map((item) => ({
       id: item.id,
       installed: item.installed,
@@ -143,13 +95,11 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     jetbrains: bridge.ok ? { port: mcp, tools: bridge.value } : bridge,
     plugin: plugin.ok ? plugin.value : plugin,
     configurations: runs.ok ? loaded : runs,
-    services: specs.map((item) => ({
+    services: targets.map((item) => ({
       id: item.id,
       workload: item.workload,
-      mode: "run",
-      port: fs.existsSync(file) ? port(item) : undefined,
-      available: names.includes(item.workload),
+      mode: item.mode,
+      port: fs.existsSync(cfg.env) ? port(item) : undefined,
     })),
   }
 }
-

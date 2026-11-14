@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { cfg } from "./config"
 
 export type Json = Record<string, unknown>
 
@@ -25,19 +26,7 @@ export type Endpoint = {
   process?: string
   tools: Json[]
 }
-export type Spec = {
-  id: string
-  workload: string
-  key: string
-  remote: string
-  program: string
-  health: string
-  service?: string
-}
-
-export const root = path.resolve(import.meta.dir, "../../..")
-export const file = path.join(root, ".env.local-cluster")
-export const namespace = "veritly"
+export const root = cfg.root
 export const ides: Ide[] = [
   { id: "intellij", name: "IntelliJ IDEA", port: 29190, bins: ["idea"], apps: ["intellij-idea"] },
   { id: "android-studio", name: "Android Studio", port: 29191, bins: ["studio"], apps: ["android-studio"] },
@@ -53,18 +42,6 @@ export const ides: Ide[] = [
   { id: "dataspell", name: "DataSpell", port: 29201, bins: ["dataspell"], apps: ["dataspell"] },
   { id: "rider", name: "Rider", port: 29202, bins: ["rider"], apps: ["rider"] },
 ]
-export const specs: Spec[] = [
-  {
-    id: "frontend",
-    workload: "veritly-frontend-dev",
-    key: "DEV_FRONTEND_PORT",
-    remote: "http",
-    program: "packages/app/node_modules/vite/bin/vite.js",
-    health: "/",
-  },
-]
-
-
 export function object(value: unknown): value is Json {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
@@ -297,11 +274,11 @@ export function field(value: Json, names: string[]) {
 
 export function record(dir: string) {
   const key = new Bun.CryptoHasher("sha256").update(dir).digest("hex").slice(0, 16)
-  return path.join(root, ".veritly/ide/open", `${key}.json`)
+  return path.join(cfg.state, "open", `${key}.json`)
 }
 
 export function projects(ide: Endpoint) {
-  const dir = path.join(root, ".veritly/ide/open")
+  const dir = path.join(cfg.state, "open")
   if (!ide.pid || !fs.existsSync(dir)) return []
   const projects = fs.readdirSync(dir).filter((file) => file.endsWith(".json")).flatMap((file) => {
     const name = path.join(dir, file)

@@ -1,49 +1,50 @@
 import fs from "node:fs"
 import path from "node:path"
 import { root, object, stamp, Repair } from "./core"
-import { localHealth } from "./service"
+import { cfg, known, service as find, shm } from "./config"
+import { local } from "./service"
 
-const base = "/dev/shm/veritly-ide-jobs"
-const cli = path.join(root, "script/veritly-ide")
-const services: Record<string, string> = { data: "Veritly Data", server: "Veritly Server", edge: "Veritly Edge", office: "Veritly Office", gateway: "Veritly AI Gateway", governor: "Veritly AI Governor" }
+const base = shm("jobs")
+const cli = [process.execPath, path.join(import.meta.dir, "cli.ts")]
 
 export function service(name: string) {
-  return services[name] || name
+  return known(name) ? find(name).configuration : name
 }
 
-export function launchable(name: string) {
-  if (service(name) === services.governor)
-    throw new Repair("Governor requires exclusive queue-worker replacement before local execution. The launcher does not yet manage Telepresence replacement and restoration; an HTTP intercept leaves the cluster worker active. No new launch was started.")
+function id(name: string) {
+  return Object.values(cfg.services).find((item) => item.configuration === service(name))?.id
+}
+
+export function launchable(name: string, session: boolean) {
+  if (!known(name) || session) return
+  const item = find(name)
+  if (item.mode === "replace")
+    throw new Repair(`${item.id} replaces its cluster workload while it runs locally; start it with debug up ${item.id} so the session stops and restores the cluster copy. No new launch was started.`)
 }
 
 export function managed(name: string) {
-  return Object.values(services).includes(service(name))
+  return known(name)
 }
 
 export async function wait(name: string, project: string, seconds: number) {
   const target = service(name)
-  if (!Object.values(services).includes(target)) throw new Error(`Unknown service ${name}; expected ${Object.keys(services).join("|")}`)
+  const key = id(name)
+  if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(cfg.services).join("|")}`)
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error("--timeout must be between 0 and 60 seconds")
   const until = Date.now() + seconds * 1000
   while (true) {
     const job = jobs(project).find((item) => item.name === target)
     if (!job) return { ok: false, phase: "missing", service: name, reason: "Start the service before waiting" }
     if (job.phase === "running" && object(job.health) && job.health.ok === true) {
-      const key = Object.keys(services).find((item) => services[item] === target)
-      if (!key) throw new Error(`Unknown service ${name}`)
-      const health = await localHealth(key)
+      const health = await local(find(key))
       if (health.ok) return { ok: true, phase: "ready", service: name, job: { ...job, health } }
     }
     if (["failed", "stopped", "unknown"].includes(String(job.phase)))
       return { ok: false, phase: job.phase, service: name, job }
     if (job.phase === "paused") {
-      const key = Object.keys(services).find((item) => services[item] === target)
-      if (!key) throw new Error(`Unknown service ${name}`)
       return { ok: false, phase: "paused", service: name, job, hint: `Run debug inspect --service ${key}, then debug resume --service ${key} to continue.` }
     }
     if (Date.now() >= until) {
-      const key = Object.keys(services).find((item) => services[item] === target)
-      if (!key) throw new Error(`Unknown service ${name}`)
       return { ok: false, phase: "waiting", service: name, job, hint: `Run debug jobs --service ${key} or wait ${key} --service ${key} again; do not start a second launch.` }
     }
     await Bun.sleep(Math.min(250, until - Date.now()))
@@ -79,15 +80,15 @@ export function jobs(project: string) {
     if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) !== state.token && !["stopped", "failed"].includes(String(state.phase)))
       return [{ ...state, phase: "unknown", message: "Launch supervisor exited; inspect IDE builds and sessions before restarting" }]
     if (state.phase === "stopped") {
-      const key = Object.keys(services).find((key) => services[key] === state.name)
+      const key = typeof state.name === "string" ? id(state.name) : undefined
       return [{ ...state, hint: key ? `The previous launch is stopped; run debug up ${key} to start a new managed session.` : "The previous launch is stopped; start a new launch when needed." }]
     }
     return [state]
   })
 }
 
-export function enqueue(name: string, project: string) {
-  launchable(name)
+export function enqueue(name: string, project: string, session = false) {
+  launchable(name, session)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   const folder = dir(name, project)
   if (fs.existsSync(folder)) {
@@ -108,7 +109,7 @@ export function enqueue(name: string, project: string) {
 }
 
 export function recover(name: string, project: string) {
-  launchable(name)
+  launchable(name, false)
   const folder = dir(name, project)
   const state = read(folder)
   if (typeof state.pid === "number" && typeof state.token === "string" && stamp(state.pid) === state.token)
@@ -136,7 +137,7 @@ export function cancel(name: string, project: string) {
 }
 
 async function call(args: string[]) {
-  const proc = Bun.spawn([cli, ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([...cli, ...args], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   const out = new Response(proc.stdout).text()
   const err = new Response(proc.stderr).text()
   const code = await proc.exited
@@ -196,7 +197,7 @@ async function worker(folder: string, recover: boolean) {
   }
   if (!recover) {
     if (stopped()) { update("stopped"); return }
-    const proc = Bun.spawn(["setsid", cli, "jetbrains", "start", name, ...args], {
+    const proc = Bun.spawn(["setsid", ...cli, "jetbrains", "start", name, ...args], {
       cwd: root, env: { ...process.env, VERITLY_IDE_JOB: folder }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     })
     const output = new Response(proc.stdout).text()
@@ -278,9 +279,9 @@ async function worker(folder: string, recover: boolean) {
           await call(["jetbrains", "stop", "--session", session.sessionId, ...args])
           continue
         }
-        const service = Object.keys(services).find((item) => services[item] === name)
-        const health = service && session.state === "running" && (!object(state.health) || state.health.ok !== true)
-          ? await localHealth(service)
+        const key = id(name)
+        const health = key && session.state === "running" && (!object(state.health) || state.health.ok !== true)
+          ? await local(find(key))
           : state.health
         update(String(session.state), { session: session.sessionId, health })
       } else if (build) {

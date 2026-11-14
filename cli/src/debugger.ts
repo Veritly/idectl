@@ -2,6 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { browsers } from "./discovery"
 import { native } from "./jetbrains"
+import { cfg } from "./config"
 import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection, stamp, quote } from "./core"
 import type { Endpoint, Json } from "./core"
 
@@ -28,7 +29,7 @@ export function debuggerClient(opts: Options) {
   async function launchedBrowser(ide: Endpoint, opts: { endpoint?: string; prior?: number[] } = {}) {
     if (process.platform !== "linux") throw new Error("IDE browser discovery is supported on Linux VMs")
     if (ide.id !== "webstorm") throw new Error("Browser attachment requires --ide webstorm; a managed service's wait result already includes preview.arguments")
-    if (!ide.pid) throw new Error("A verified WebStorm process is required; open packages/app --ide webstorm first")
+    if (!ide.pid) throw new Error(`A verified WebStorm process is required; open ${cfg.frontend.project} --ide webstorm first`)
     const dir = project ? path.resolve(project) : opened(ide)
     const file = dir ? record(dir) : undefined
     const state: unknown = file && fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : undefined
@@ -179,7 +180,7 @@ export function debuggerClient(opts: Options) {
       if (opts.configuration && !live.length) throw new Error(`No active ${opts.configuration} debug session; check debug jobs before starting another launch`)
       if (live.length > 1)
         throw new Error(
-          `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}; for frontend inspection select the paused Veritly Browser session and inspect before resuming`,
+          `Select --session ID: ${JSON.stringify(live.map((row) => ({ id: row.id, name: row.name, state: row.state })))}; for frontend inspection select the paused ${cfg.frontend.browser} session and inspect before resuming`,
         )
       if (live.length === 1) args.session_id = field(live[0], ["id", "sessionId"])
     }

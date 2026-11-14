@@ -6,25 +6,51 @@ import { browsers } from "../src/discovery"
 import { address, browser, prepare, scope } from "../src/project"
 import { rows, record, selection } from "../src/core"
 import { wait, enqueue, recover } from "../src/job"
-import { context, up } from "../src/session"
+import { context } from "../src/session"
 import { Repair } from "../src/core"
+import { load } from "../src/config"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
 
-test("blocks unsupported worker launches before changing managed state and requests repair", async () => {
+test("replace-mode services launch only inside a managed session and request repair otherwise", async () => {
   const before = context("governor").state
-  expect(() => up("governor")).toThrow(Repair)
   expect(() => enqueue("Veritly AI Governor", "/unused")).toThrow(Repair)
   expect(() => recover("Veritly AI Governor", "/unused")).toThrow(Repair)
   expect(context("governor").state).toEqual(before)
-  const proc = Bun.spawn(["bun", cli, "debug", "up", "governor", "--json"], { stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn(["bun", cli, "route", "governor", "--json"], { stdout: "pipe", stderr: "pipe" })
   const output = new Response(proc.stdout).text()
   const error = await new Response(proc.stderr).json()
   expect(await proc.exited).toBe(1)
   expect(await output).toBe("")
   expect(error).toMatchObject({ code: "environment_repair_required", retryable: false })
-  expect(error.hint).toContain("Stop this task")
+  expect(error.error).toContain("debug up governor")
   expect(context("governor").state).toEqual(before)
+})
+
+test("project config is validated and owns every service definition", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ide-config-"))
+  const target = { project: "app", configuration: "App", health: "/", port: "APP_PORT", workload: "app", agent: "sidecar", mode: "intercept" }
+  const write = (value: unknown) => fs.writeFileSync(path.join(dir, "idectl.json"), JSON.stringify(value))
+  const base = {
+    env: ".env", state: ".state", adapter: { type: "none" },
+    frontend: { ...target, browser: "Browser", url: "APP_URL", mounted: "true" },
+    services: { api: { ...target, configuration: "Api", binary: "target/api", container: "api" } },
+  }
+  try {
+    write(base)
+    const value = load(dir)
+    expect(value.adapter).toEqual({ type: "none" })
+    expect(value.services.api).toMatchObject({ id: "api", configuration: "Api", mode: "intercept" })
+    expect(value.env).toBe(path.join(dir, ".env"))
+    write({ ...base, services: { api: { ...base.services.api, mode: "swap" } } })
+    expect(() => load(dir)).toThrow("services.api.mode must be intercept or replace")
+    write({ ...base, services: { frontend: base.services.api } })
+    expect(() => load(dir)).toThrow("frontend is reserved")
+    write({ ...base, adapter: { type: "kubernetes", namespace: "dev" } })
+    expect(() => load(dir)).toThrow("adapter.skip")
+  } finally {
+    fs.rmSync(dir, { recursive: true })
+  }
 })
 
 test("startup selection errors are JSON and explain frontend debugger selection", async () => {
@@ -96,15 +122,6 @@ test("rejects malformed debugger lists instead of reporting them as empty", () =
   expect(rows({ sessions: [] }, "sessions")).toEqual([])
 })
 
-test("lists the local service presets as JSON", async () => {
-  const proc = Bun.spawn(["bun", cli, "services"], { stdout: "pipe", stderr: "pipe" })
-  const output = await new Response(proc.stdout).json()
-  expect(await proc.exited).toBe(0)
-  expect(output).toEqual(
-    expect.arrayContaining([expect.objectContaining({ id: "frontend", mode: "run", key: "DEV_FRONTEND_PORT" })]),
-  )
-})
-
 test("prints shell-friendly help", async () => {
   const proc = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
   const help = await new Response(proc.stdout).text()
@@ -120,15 +137,13 @@ test("nested debugger help works without selecting or contacting an IDE", async 
   expect(await proc.exited).toBe(0)
 })
 
-test("documents the inspection commands and one shared env", async () => {
+test("documents the inspection commands and the project config", async () => {
   const help = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
-  expect(await new Response(help.stdout).text()).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
+  const text = await new Response(help.stdout).text()
+  expect(text).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
+  expect(text).toContain("idectl.json")
   expect(await help.exited).toBe(0)
 
-  const list = Bun.spawn(["bun", cli, "services"], { stdout: "pipe", stderr: "pipe" })
-  const services = (await new Response(list.stdout).json()) as { env: string }[]
-  expect(await list.exited).toBe(0)
-  expect(services.every((item) => item.env.endsWith("/.env.local-cluster"))).toBe(true)
 
   const skill = await Bun.file(path.resolve(import.meta.dir, "../../../.agents/skills/veritly-ide/SKILL.md")).text()
   expect(skill).toContain("DEBUG.md")
