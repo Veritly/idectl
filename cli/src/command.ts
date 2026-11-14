@@ -18,6 +18,7 @@ import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as s
 import { start as requestStart, wait as requestWait } from "./request"
 import { scope as projectScope } from "./project"
 import { on as attachOn, off as attachOff } from "./attach"
+import { keep, install, uninstall } from "./keep"
 
 const args = process.argv.slice(2)
 
@@ -83,6 +84,7 @@ ${bin} plugin retry
 ${bin} ready PATH --url URL
 ${bin} wait plugin|frontend|${names} [--timeout SECONDS] [--json]
 ${bin} ides
+${bin} ide install|uninstall webstorm|rustrover   (run the IDE as a systemd user service from boot)
 ${bin} connect
 ${bin} env SERVICE   (WebStorm services: the launch environment as JSON, for script/ide wrappers)
 ${bin} open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
@@ -186,6 +188,14 @@ export async function main() {
     const result = await wait(name, target, timeout ? Number(timeout) : 60)
     print(result)
     return result.ok ? 0 : ["waiting", "paused"].includes(String(result.phase)) ? 2 : 1
+  }
+  if (group === "ide") {
+    const action = args.shift()
+    const id = args.shift()
+    if (!id || args.length || !["keep", "install", "uninstall"].includes(action || "")) throw new Error("ide expects keep|install|uninstall IDE")
+    if (action === "keep") await keep(id, endpoints)
+    else print(action === "install" ? await install(id) : await uninstall(id))
+    return 0
   }
   if (group === "ides") {
     const active = await endpoints()
