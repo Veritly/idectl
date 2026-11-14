@@ -1,4 +1,6 @@
+import fs from "node:fs"
 import path from "node:path"
+import { unbound } from "./lines"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
@@ -288,8 +290,11 @@ export async function main() {
         opts.condition = condition
       }
       const result = await tool(ide, "set_breakpoint", { ...opts, ...(once ? { temporary: true } : {}), file_path: path.resolve(root, target), line })
+      const text = owner === "webstorm" ? fs.readFileSync(path.resolve(root, target), "utf8").split("\n")[line - 1] : undefined
+      const why = text === undefined ? undefined : unbound(text)
       print(object(result) ? {
         ...result,
+        ...(why ? { warning: `Line ${line} will probably never pause: ${why}. The IDE still reports the breakpoint as set.` } : {}),
         binding: "unknown",
         bindingNote: "IDE acceptance does not prove binding or runtime condition evaluation; inspect the paused location and locals to identify the request.",
         hint: opts.condition === undefined

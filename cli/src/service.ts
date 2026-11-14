@@ -80,7 +80,12 @@ export async function attach(item: Service | Frontend, note: (text: string) => v
   await adapter.connect()
   if (item.mode === "intercept" && "ide" in item && !(await owned(item)))
     throw new Error(`The local ${item.id} process is not listening on port ${port(item)}; run debug start ${item.id}, then wait ${item.id} --service ${item.id}`)
-  if (item.mode === "intercept" && !(await health(item)).ok)
+  // A dev server's first request can compile for longer than one probe allows; ready is judged over a few seconds, not one attempt.
+  const settled = async () => {
+    for (let i = 0; i < 10; i++) if ((await health(item)).ok || (await Bun.sleep(300), false)) return true
+    return false
+  }
+  if (item.mode === "intercept" && !(await settled()))
     throw new Error(`Local ${item.id} is not ready on port ${port(item)}; wait for it before routing`)
   return { ok: true, ...(await adapter.attach(item, port(item), note)) }
 }

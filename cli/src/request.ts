@@ -95,7 +95,7 @@ async function worker(id: string, url: string, seconds: number) {
       size += Math.min(part.value.length, remaining)
       if (part.value.length > remaining || size === 16384) { truncated = true; await reader.cancel(); break }
     }
-    Object.assign(state, { phase: "complete", ok: response.ok, status: response.status, body: Buffer.concat(chunks).toString("utf8"), truncated })
+    Object.assign(state, { phase: "complete", ok: true, status: response.status, body: Buffer.concat(chunks).toString("utf8"), truncated })
   } catch (err) {
     Object.assign(state, { phase: "failed", ok: false, error: err instanceof Error ? err.message : String(err) })
   } finally {

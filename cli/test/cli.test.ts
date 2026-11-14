@@ -344,3 +344,15 @@ test("an unsupported Rust method evaluation suggests stored fields rather than f
   expect(debug.evaluation("ERROR: error: not calling a function")).toContain("stored fields")
   expect(debug.evaluation("ERROR: error: not calling a function")).not.toContain("function entry")
 })
+
+test("line breakpoints are checked for a statement to bind to", async () => {
+  const { unbound } = await import("../src/lines")
+  expect(unbound("  const x = 1")).toBeUndefined()
+  expect(unbound("  return fetch(url)")).toBeUndefined()
+  expect(unbound("  const f = async () => {")).toBeUndefined()
+  expect(unbound("  home: () => json({ ok: true }),")).toContain("arrow function")
+  expect(unbound("  const name = () => value")).toContain("arrow function")
+  expect(unbound("    port: 8080,")).toContain("object property")
+  expect(unbound("  }")).toContain("closing")
+  expect(unbound("  // note")).toContain("empty")
+})
