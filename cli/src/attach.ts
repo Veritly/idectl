@@ -3,6 +3,7 @@ import path from "node:path"
 import { cfg, name } from "./config"
 import { root, command, parse, object, rows, field } from "./core"
 import { scope } from "./project"
+import { local } from "./service"
 
 function find(id: string) {
   const item = cfg.attach[id]
@@ -21,6 +22,10 @@ async function sessions(project: string, configuration: string) {
 /** Writes the inspect port for the spawner and attaches WebStorm. The run configuration reconnects by itself, so one session catches every process the service spawns while the port file exists. */
 export async function on(id: string) {
   const item = find(id)
+  const owner = item.service ? cfg.services[item.service] : undefined
+  if (item.service && !owner) throw new Error(`attach ${id} names the unknown service ${item.service}`)
+  if (owner && !(await local(owner)).owner)
+    throw new Error(`${id} needs the local ${owner.id} process: the cluster copy starts these processes inside its pod, where the IDE cannot reach their inspector. Run ${name} debug up ${owner.id}, wait for it to be ready, then attach again`)
   const file = path.join(root, item.file)
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, `${item.port}\n`)

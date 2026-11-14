@@ -21,7 +21,7 @@ export type Service = Target & { ide: Ide; binary?: string; container: string }
 export type Frontend = Target & { browser: string; url: string; mounted: string }
 export type Kubernetes = { type: "kubernetes"; namespace: string; skip: string[]; manager?: { namespace: string; release: string } }
 /** A debugger-attach configuration for processes the services spawn themselves; `file` holds the inspect port the spawner reads. */
-export type Attach = { project: string; configuration: string; port: string; file: string }
+export type Attach = { project: string; configuration: string; port: string; file: string; service?: string }
 export type Adapter = Kubernetes | { type: "none" }
 export type Config = {
   root: string
@@ -148,6 +148,7 @@ export function load(dir: string): Config {
         configuration: text(item.configuration, `attach.${id}.configuration`),
         port: text(item.port, `attach.${id}.port`),
         file: text(item.file, `attach.${id}.file`),
+        service: item.service === undefined ? undefined : text(item.service, `attach.${id}.service`),
       }]
     })),
     test: test ? {

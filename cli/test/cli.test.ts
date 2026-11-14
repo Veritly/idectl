@@ -356,3 +356,19 @@ test("line breakpoints are checked for a statement to bind to", async () => {
   expect(unbound("  }")).toContain("closing")
   expect(unbound("  // note")).toContain("empty")
 })
+
+test("an attach can name the service that must run locally", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ide-attach-"))
+  const target = { project: "app", configuration: "App", health: "/", port: "APP_PORT", workload: "app", agent: "sidecar", mode: "intercept" }
+  try {
+    fs.writeFileSync(path.join(dir, "idectl.json"), JSON.stringify({
+      cli: "idectl", env: ".env", state: ".state", adapter: { type: "none" },
+      frontend: { ...target, browser: "Browser", url: "APP_URL", mounted: "true" },
+      services: { api: { ...target, configuration: "Api", ide: "rustrover", binary: "target/api", container: "api" } },
+      attach: { drivers: { project: "d", configuration: "D", port: "9229", file: ".state/inspect", service: "api" } },
+    }))
+    expect(load(dir).attach.drivers.service).toBe("api")
+  } finally {
+    fs.rmSync(dir, { recursive: true })
+  }
+})
