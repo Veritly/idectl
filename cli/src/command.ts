@@ -251,7 +251,8 @@ export async function main() {
       const owner = ext === ".rs" ? "rustrover" : [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined
       if (owner && owner !== ide.id)
         throw new Error(`${target} belongs in ${owner}, but this selector chose ${ide.id}; use breakpoint set ${target} ${line}${once ? " --once" : ""} --ide ${owner} without --service`)
-      const managed = ide.id === "webstorm" ? sessionOwner() : undefined
+      // --service names a backend that already selected its own project; the browser-project rule is for frontend files.
+      const managed = ide.id === "webstorm" && !scope ? sessionOwner() : undefined
       if (managed) {
         const current = project || (await attempt(async () => opened(ide))).value
         if (current !== managed.project)
