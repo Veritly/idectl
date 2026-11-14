@@ -78,6 +78,7 @@ export function lifecycle(ctx: Context) {
     if (!listener && plugin.running)
       return { ok: false, phase: "ide_restart_required", ide: ide.id, project: cfg.project, message: `Close ${ide.name} after finishing active work, then open the project again to enable its debugger connection` }
     if (!project) prepare(cfg as ReturnType<typeof scope>)
+    const loaded = { value: false }
     if (listener && !project) {
       const live = (await endpoints()).find((item) => item.id === ide.id)
       if (!live) throw new Error(`${ide.name} is running but its debugger connection is unavailable`)
@@ -86,12 +87,13 @@ export function lifecycle(ctx: Context) {
       const client = await jetbrains(ide.port + 300)
       try {
         const tools = await client.tools()
-        if (!["veritly_open_windows", "veritly_trust_project"].every((name) => tools.some((item) => item.name === name)))
-          throw new Error(`Install the current Veritly JetBrains lifecycle plugin in ${ide.name} and reopen the IDE`)
+        if (!["idectl_open_windows", "idectl_trust_project", "idectl_reload_project"].every((name) => tools.some((item) => item.name === name)))
+          throw new Error(`Install the current idectl JetBrains lifecycle plugin in ${ide.name} and reopen the IDE`)
         const available = projects(live)
+        loaded.value = available.includes(cfg.project)
         const target = available.includes(cfg.project) ? cfg.project : available[0] || cfg.project
-        await client.call("veritly_open_windows", { projectPath: target })
-        const result = content(await client.call("veritly_trust_project", { directory: cfg.project, projectPath: target }))
+        await client.call("idectl_open_windows", { projectPath: target })
+        const result = content(await client.call("idectl_trust_project", { directory: cfg.project, projectPath: target }))
         if (!object(result) || result.trusted !== true) throw new Error("IDE did not trust the generated debugger project")
       } finally {
         await client.close()
@@ -99,6 +101,15 @@ export function lifecycle(ctx: Context) {
     }
     if (url && ide.id !== "webstorm") throw new Error("--url requires WebStorm")
     if (url) browser(root, scope(root, cfg.source).component, cfg.project, url, attach)
+    if (loaded.value) {
+      const client = await jetbrains(ide.port + 300)
+      try {
+        const result = content(await client.call("idectl_reload_project", { projectPath: cfg.project }, 10_000))
+        if (!object(result) || result.reloaded !== true) throw new Error(`${ide.name} did not reload the regenerated project configuration`)
+      } finally {
+        await client.close()
+      }
+    }
     if (!listener) await settings(bin, cfg.project, ide)
     const file = record(cfg.project)
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })

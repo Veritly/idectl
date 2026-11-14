@@ -36,7 +36,7 @@ export type Config = {
   }
 }
 
-export const name = "veritly-ide"
+export const name = "idectl"
 export const file = "idectl.json"
 
 function find(dir: string): string {

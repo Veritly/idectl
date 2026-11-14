@@ -24,7 +24,7 @@ export function scope(cwd: string, target: string, home = os.homedir()) {
     throw new Error(`Choose a Rust component with a src directory, rather than a workspace: ${component}`)
   const content = fs.existsSync(path.join(component, "src")) ? path.join(component, "src") : component
   const key = new Bun.CryptoHasher("sha256").update(root).digest("hex").slice(0, 12)
-  const project = path.join(home, ".local/share/veritly-debugger", key, path.relative(root, component))
+  const project = path.join(home, ".local/share/idectl/projects", key, path.relative(root, component))
   return { root, source, file, component, content, project, ide }
 }
 

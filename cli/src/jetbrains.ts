@@ -8,7 +8,7 @@ import { runtime } from "./setup"
 export const aliases: Record<string, string> = { status: "xdebug_get_debugger_status", sessions: "xdebug_get_debugger_status", configs: "get_run_configurations", output: "xdebug_get_process_output", console: "xdebug_get_process_output", start: "xdebug_start_debugger_session", stop: "xdebug_control_session", pause: "xdebug_control_session", resume: "xdebug_control_session", wait: "xdebug_control_session", "step-over": "xdebug_control_session", "step-into": "xdebug_control_session", "step-out": "xdebug_control_session", stack: "xdebug_get_stack", vars: "xdebug_get_frame_values", eval: "xdebug_evaluate_expression", threads: "xdebug_get_threads" }
 
 async function runs(client: Awaited<ReturnType<typeof jetbrains>>, project: unknown) {
-  const data = content(await client.call("veritly_run_status", { projectPath: project }))
+  const data = content(await client.call("idectl_run_status", { projectPath: project }))
   if (!object(data) || !Array.isArray(data.runs) || !data.runs.every(object)) throw new Error("IDE lifecycle plugin returned invalid executions")
   return data.runs.filter(object)
 }
@@ -52,7 +52,7 @@ export async function jetbrains(port: number) {
     }
     return body.result
   }
-  await send("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "veritly-ide", version: "1" } })
+  await send("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "idectl", version: "1" } })
   await send("notifications/initialized", {}, true)
   return {
     async close() {
@@ -90,7 +90,7 @@ export async function native(ide: Endpoint) {
   const port = known.port + 300
   const listener = (await sockets()).find((item) => item.port === port)
   if (!listener || listener.pid !== ide.pid)
-    throw new Error(`JetBrains MCP is not listening on ${port} in ${ide.name}; reopen the IDE with veritly-ide open`)
+    throw new Error(`JetBrains MCP is not listening on ${port} in ${ide.name}; reopen the IDE with idectl open`)
   return jetbrains(port)
 }
 
@@ -103,8 +103,8 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     const tools = await client.tools()
     const action = args.shift()
     if (ide.id === "rustrover" && ["builds", "cancel", "start"].includes(action || "") &&
-      !["veritly_run_status", "veritly_run_stop", "veritly_cargo_attach"].every((name) => tools.some((item) => item.name === name)))
-      throw new Error("Install the current Veritly JetBrains lifecycle plugin in RustRover and reopen the IDE")
+      !["idectl_run_status", "idectl_run_stop", "idectl_cargo_attach"].every((name) => tools.some((item) => item.name === name)))
+      throw new Error("Install the current idectl JetBrains lifecycle plugin in RustRover and reopen the IDE")
     if (action === "tools") {
       const query = args.join(" ").trim().toLowerCase()
       const found = tools.filter((item) => typeof item.name === "string" && item.name.toLowerCase().includes(query))
@@ -132,7 +132,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       if (!name) throw new Error("debug cancel requires a configuration name")
       const found = live.filter((item) => item.name === name && item.cancellable)
       if (found.length !== 1) throw new Error(`Expected one cancellable IDE build for ${name}; found ${found.length}`)
-      await client.call("veritly_run_stop", { id: found[0].id, projectPath: target })
+      await client.call("idectl_run_stop", { id: found[0].id, projectPath: target })
       print({ ok: true, phase: "cancelling", build: found[0] })
       return 0
     }
@@ -195,7 +195,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       }
     }
     if (action === "start" && typeof values.configurationName === "string") {
-      if (ide.id === "rustrover" && !process.env.VERITLY_IDE_JOB)
+      if (ide.id === "rustrover" && !process.env.IDECTL_JOB)
         throw new Error("Use debug start for Rust so preparation and cleanup are supervised")
       const configs = content(await client.call("get_run_configurations", { projectPath: values.projectPath }))
       if (!object(configs) || !Array.isArray(configs.configurations)) throw new Error("IDE returned invalid run configurations")
@@ -211,9 +211,9 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
         if (typeof selected.workingDirectory !== "string") throw new Error("Run configuration has no working directory")
         const manifest = path.join(selected.workingDirectory, "Cargo.toml")
         if (!fs.existsSync(manifest)) throw new Error(`Cargo manifest not found in ${selected.workingDirectory}`)
-        if (process.env.VERITLY_IDE_JOB) fs.writeFileSync(path.join(process.env.VERITLY_IDE_JOB, "phase"), "loading Cargo project", { mode: 0o600 })
+        if (process.env.IDECTL_JOB) fs.writeFileSync(path.join(process.env.IDECTL_JOB, "phase"), "loading Cargo project", { mode: 0o600 })
         while (true) {
-          const cargo = content(await client.call("veritly_cargo_attach", { manifest, projectPath: values.projectPath }))
+          const cargo = content(await client.call("idectl_cargo_attach", { manifest, projectPath: values.projectPath }))
           if (!object(cargo) || typeof cargo.phase !== "string") throw new Error("IDE returned invalid Cargo project state")
           if (cargo.phase === "ready") break
           if (cargo.phase !== "loading" && cargo.phase !== "attaching") throw new Error(`Cargo project is ${cargo.phase}`)
@@ -225,12 +225,12 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
         if (selected.supportsDynamicLaunchOverrides !== true) throw new Error(`${values.configurationName} does not support per-launch environment overrides`)
         values.envs = env
       }
-      if (process.env.VERITLY_IDE_JOB) fs.writeFileSync(path.join(process.env.VERITLY_IDE_JOB, "phase"), "starting IDE", { mode: 0o600 })
+      if (process.env.IDECTL_JOB) fs.writeFileSync(path.join(process.env.IDECTL_JOB, "phase"), "starting IDE", { mode: 0o600 })
     }
     const reply = await attempt(() => client.call(name, values, seconds * 1000 + (action === "start" ? 2000 : 0)))
     if (!reply.ok) {
       if (name === "xdebug_get_process_output" && reply.error.includes("SESSION_NOT_FOUND"))
-        throw new Error(`${reply.error} Use jetbrains status with the same IDE/service selector to find the debugger sessionId; lifecycle run IDs from veritly_run_status are not debugger session IDs.`)
+        throw new Error(`${reply.error} Use jetbrains status with the same IDE/service selector to find the debugger sessionId; lifecycle run IDs from idectl_run_status are not debugger session IDs.`)
       if (action === "start" && reply.error.toLowerCase().includes("timed out")) {
         const live = await runs(client, values.projectPath)
         const found = builds(live).find((item) => item.name === values.configurationName)

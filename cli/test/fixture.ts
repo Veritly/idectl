@@ -1,6 +1,6 @@
 export function sample(input: number) {
   let value = input * 2
-  const proof = value + 1 // veritly-ide-breakpoint
+  const proof = value + 1 // idectl-breakpoint
   return proof
 }
 

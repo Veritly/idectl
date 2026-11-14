@@ -1,0 +1,6 @@
+node_modules/
+example/.idectl/
+plugin/build/
+plugin/.gradle/
+plugin/.kotlin/
+/*/target/

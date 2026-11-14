@@ -6,15 +6,28 @@ import { ides, launcher, object, stamp } from "./core"
 import type { Ide } from "./core"
 import debuggerFiles from "./debugger-plugin.json"
 
-const revision = "2a3eee3e600c4627fae0a7487c91e5bf5d75d5e0"
-// Fingerprint of this revision built with RustRover 263.7307.214.
-const known = "51dbcf009878080b2d2215395187c105bb7b0cc461c1805c02751a2887781cf4"
-const remote = "https://github.com/Veritly/veritly-jetbrains-plugin.git"
-const base = path.join(os.homedir(), ".cache/veritly-ide/plugin")
+const plugin = path.resolve(import.meta.dir, "../../plugin")
+const base = path.join(os.homedir(), ".cache/idectl/plugin")
+const revision = sources(plugin)
 const debuggerHash = "cd277059784084db72cbdc7f7072f182df11a37a89e54f29ae5e16f39c89ca84"
 const debuggerUrl = "https://plugins.jetbrains.com/files/29233/1213010/jetbrains-debugger-mcp-plugin-5.4.0.zip"
 const patched = "fb3f688b35f754d26992185f0c278867a8ac2fde9dab1fca67afa6f49b91e905"
 const debuggerJar = "lib/jetbrains-debugger-mcp-plugin-5.4.0.jar"
+
+function files(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === "build" || entry.name === ".gradle" || entry.name === ".kotlin") return []
+    const full = path.join(dir, entry.name)
+    return entry.isDirectory() ? files(full) : [full]
+  }).sort()
+}
+
+function sources(dir: string) {
+  if (!fs.existsSync(path.join(dir, "settings.gradle.kts"))) throw new Error(`JetBrains plugin source is missing: ${dir}`)
+  const hash = createHash("sha256")
+  for (const file of files(dir)) hash.update(path.relative(dir, file)).update("\0").update(fs.readFileSync(file)).update("\0")
+  return hash.digest("hex").slice(0, 24)
+}
 
 function digest(file: string) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex")
@@ -32,7 +45,7 @@ function product(bin: string) {
 }
 
 function folder(name: string) {
-  if (process.platform === "linux") return path.join(os.homedir(), ".local/share/JetBrains", name, "veritly-ide-lifecycle")
+  if (process.platform === "linux") return path.join(os.homedir(), ".local/share/JetBrains", name, "idectl-lifecycle")
   throw new Error("Automatic JetBrains plugin installation currently supports Linux")
 }
 
@@ -153,7 +166,7 @@ export function installDebugger(target: string, dir: string, active: boolean, na
   if (active) return { ok: false, phase: "plugin_restart_required", message: `Close ${name} after finishing active work, then open the project again` }
   const parent = path.dirname(target)
   fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
-  const stage = fs.mkdtempSync(path.join(parent, ".veritly-debugger-"))
+  const stage = fs.mkdtempSync(path.join(parent, ".idectl-debugger-"))
   const out = Bun.spawnSync(["unzip", "-q", archive, "-d", stage], { stdin: "ignore", stdout: "pipe", stderr: "pipe" })
   if (out.exitCode !== 0) throw new Error("Could not extract the verified debugger plugin")
   const plugin = path.join(stage, "jetbrains-debugger-mcp-plugin")
@@ -182,11 +195,11 @@ export function install(target: string, dir: string, active: boolean, name: stri
     throw new Error("Built plugin artifact is missing or invalid")
   if (active) return { ok: false, phase: "plugin_restart_required", message: `Close ${name} after finishing active work, then open the project again` }
   fs.mkdirSync(path.join(target, "lib"), { recursive: true, mode: 0o700 })
-  const jar = path.join(target, "lib/veritly-ide-lifecycle.jar")
+  const jar = path.join(target, "lib/idectl-lifecycle.jar")
   const temp = path.join(target, `lib/.plugin-${globalThis.process.pid}.jar`)
   fs.copyFileSync(path.join(dir, "plugin.jar"), temp)
   fs.renameSync(temp, jar)
-  save(path.join(target, ".veritly.json"), { revision, sha256: current.sha256, sdk: current.build, ide: build })
+  save(path.join(target, ".idectl.json"), { revision, sha256: current.sha256, sdk: current.build, ide: build })
   return { ok: true, phase: "installed" }
 }
 
@@ -197,14 +210,10 @@ async function worker(dir: string, sdk: string, build: string) {
   const log = fs.openSync(path.join(dir, "build.log"), "a", 0o600)
   const update = (phase: string, extra: Record<string, unknown> = {}) => save(file, { phase, pid: globalThis.process.pid, token, revision, build, ...extra })
   try {
-    update("fetching")
+    update("copying")
     const source = path.join(dir, "source")
-    fs.mkdirSync(source, { mode: 0o700 })
-    await run(["git", "init", "--quiet"], source, log)
-    await run(["git", "-c", "credential.interactive=never", "fetch", "--quiet", "--depth=1", remote, revision], source, log, { ...globalThis.process.env, GIT_TERMINAL_PROMPT: "0" }, 10000)
-    await run(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], source, log)
-    const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: source, stdout: "pipe", stderr: "pipe" })
-    if (head.exitCode !== 0 || head.stdout.toString().trim() !== revision) throw new Error("Plugin source revision does not match the required revision")
+    fs.cpSync(plugin, source, { recursive: true, filter: (file) => ![".gradle", "build", ".kotlin"].includes(path.basename(file)) })
+    if (sources(source) !== revision) throw new Error("Plugin source changed while it was copied; retry the plugin build")
     update("building")
     const java = path.join(sdk, "jbr")
     if (!fs.existsSync(path.join(java, "bin/java"))) throw new Error("The RustRover runtime is missing")
@@ -223,9 +232,9 @@ async function worker(dir: string, sdk: string, build: string) {
     const patch = path.join(source, "build/distributions/debugger-patched.jar")
     if (!fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger scope patch checksum is invalid")
     fs.copyFileSync(patch, path.join(dir, "debugger-patched.jar"))
-    const archive = path.join(source, "build/distributions/veritly-ide-lifecycle.zip")
+    const archive = path.join(source, "build/distributions/idectl-lifecycle.zip")
     const jar = path.join(dir, "plugin.jar")
-    const out = Bun.spawn(["unzip", "-p", archive, "veritly-ide-lifecycle/lib/veritly-ide-lifecycle.jar"], { stdout: "pipe", stderr: log, stdin: "ignore" })
+    const out = Bun.spawn(["unzip", "-p", archive, "idectl-lifecycle/lib/idectl-lifecycle.jar"], { stdout: "pipe", stderr: log, stdin: "ignore" })
     const bytes = await new Response(out.stdout).arrayBuffer()
     if (await out.exited !== 0 || bytes.byteLength === 0) throw new Error("Plugin archive does not contain the expected JAR")
     fs.writeFileSync(jar, Buffer.from(bytes), { mode: 0o600 })
@@ -242,11 +251,10 @@ export function inspect(ide: Ide, bin: string) {
   if (!info.build.startsWith("263.")) return { ok: false, phase: "unsupported", error: `${ide.name} ${info.build} is not supported by the pinned lifecycle plugin` }
   const target = folder(info.name)
   const debuggerReady = validDebugger(path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin"))
-  const jar = path.join(target, "lib/veritly-ide-lifecycle.jar")
-  const marker = read(path.join(target, ".veritly.json"))
+  const jar = path.join(target, "lib/idectl-lifecycle.jar")
+  const marker = read(path.join(target, ".idectl.json"))
   if (fs.existsSync(jar)) {
     const hash = digest(jar)
-    if (hash === known && ["263.7307.214", "263.7307.202"].includes(info.build)) return { ok: debuggerReady, phase: debuggerReady ? "ready" : "missing_debugger" }
     const rust = ides.find((item) => item.id === "rustrover")
     const rustbin = rust ? launcher(rust) : undefined
     if (marker?.revision === revision && marker.sha256 === hash && marker.ide === info.build && rustbin && marker.sdk === product(rustbin).build)

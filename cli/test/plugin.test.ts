@@ -6,10 +6,10 @@ import path from "node:path"
 import { install, installDebugger } from "../src/plugin"
 
 test("installs a verified plugin only after the IDE stops", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "veritly-plugin-test-"))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "idectl-plugin-test-"))
   try {
     const dir = path.join(root, "build")
-    const target = path.join(root, "plugins", "veritly-ide-lifecycle")
+    const target = path.join(root, "plugins", "idectl-lifecycle")
     fs.mkdirSync(dir)
     const bytes = Buffer.from("plugin artifact")
     fs.writeFileSync(path.join(dir, "plugin.jar"), bytes)
@@ -17,7 +17,7 @@ test("installs a verified plugin only after the IDE stops", () => {
     expect(install(target, dir, true, "RustRover", "263.1.1").phase).toBe("plugin_restart_required")
     expect(fs.existsSync(target)).toBe(false)
     expect(install(target, dir, false, "RustRover", "263.1.1").phase).toBe("installed")
-    expect(fs.readFileSync(path.join(target, "lib/veritly-ide-lifecycle.jar"))).toEqual(bytes)
+    expect(fs.readFileSync(path.join(target, "lib/idectl-lifecycle.jar"))).toEqual(bytes)
     fs.writeFileSync(path.join(dir, "plugin.jar"), "corrupted")
     expect(() => install(target, dir, false, "RustRover", "263.1.1")).toThrow("artifact is missing or invalid")
   } finally {
@@ -26,7 +26,7 @@ test("installs a verified plugin only after the IDE stops", () => {
 })
 
 test("rejects a corrupted debugger archive before touching the installed plugin", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "veritly-debugger-test-"))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "idectl-debugger-test-"))
   try {
     const dir = path.join(root, "build")
     const target = path.join(root, "plugin")

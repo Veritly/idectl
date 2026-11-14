@@ -191,7 +191,7 @@ export function debuggerClient(opts: Options) {
     }
     if (["set_breakpoint", "remove_breakpoint"].includes(name)) {
       const client = await native(ide)
-      await client.call("veritly_save_project", { projectPath: args.project_path }, timeout)
+      await client.call("idectl_save_project", { projectPath: args.project_path }, timeout)
     }
     return result
   }
@@ -199,7 +199,7 @@ export function debuggerClient(opts: Options) {
   async function filter(ide: Endpoint, configuration: string, target?: unknown) {
     const client = await native(ide)
     try {
-      return content(await client.call("veritly_debug_filter", {
+      return content(await client.call("idectl_debug_filter", {
         configuration, projectPath: typeof target === "string" ? target : project || opened(ide),
       }, 5000))
     } finally {

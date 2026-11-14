@@ -5,4 +5,4 @@ pluginManagement {
   }
 }
 
-rootProject.name = "veritly-ide-lifecycle"
+rootProject.name = "idectl-lifecycle"

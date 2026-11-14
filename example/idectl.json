@@ -1,0 +1,46 @@
+{
+  "env": ".env",
+  "state": ".idectl",
+  "adapter": { "type": "none" },
+  "frontend": {
+    "project": "web",
+    "configuration": "Example Frontend",
+    "browser": "Example Browser",
+    "url": "APP_URL",
+    "port": "WEB_PORT",
+    "health": "/",
+    "mounted": "document.documentElement.dataset.mount === 'complete' && document.getElementById('root')?.childElementCount > 0",
+    "workload": "web",
+    "agent": "sidecar",
+    "mode": "intercept"
+  },
+  "services": {
+    "api": {
+      "project": "api",
+      "configuration": "Example Api",
+      "binary": "api/target/debug/api",
+      "health": "/ready",
+      "port": "API_PORT",
+      "workload": "api",
+      "container": "api",
+      "agent": "sidecar",
+      "mode": "intercept"
+    },
+    "worker": {
+      "project": "worker",
+      "configuration": "Example Worker",
+      "binary": "worker/target/debug/worker",
+      "health": "/ready",
+      "port": "WORKER_PORT",
+      "workload": "worker",
+      "container": "worker",
+      "agent": "sidecar",
+      "mode": "replace"
+    }
+  },
+  "test": {
+    "configuration": "Breakpoint Test",
+    "file": "../cli/test/fixture.ts",
+    "marker": "idectl-breakpoint"
+  }
+}

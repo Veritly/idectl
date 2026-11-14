@@ -179,7 +179,7 @@ async function worker(folder: string, recover: boolean) {
     update("failed", { error: "This configuration already has an active IDE session" })
     return
   }
-  const initialRuns = await call(["jetbrains", "call", "veritly_run_status", "{}", ...args])
+  const initialRuns = await call(["jetbrains", "call", "idectl_run_status", "{}", ...args])
   if (!Array.isArray(initialRuns.runs) || !initialRuns.runs.every(object)) throw new Error("IDE returned invalid execution list")
   const priorRuns = recover ? [] : initialRuns.runs.filter(object).map((item) => item.id)
   const active = await call(["jetbrains", "builds", ...args])
@@ -198,7 +198,7 @@ async function worker(folder: string, recover: boolean) {
   if (!recover) {
     if (stopped()) { update("stopped"); return }
     const proc = Bun.spawn(["setsid", ...cli, "jetbrains", "start", name, ...args], {
-      cwd: root, env: { ...process.env, VERITLY_IDE_JOB: folder }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+      cwd: root, env: { ...process.env, IDECTL_JOB: folder }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     })
     const output = new Response(proc.stdout).text()
     const errors = new Response(proc.stderr).text()
@@ -265,7 +265,7 @@ async function worker(folder: string, recover: boolean) {
       )
       const session = sessions.find((item) => item.state === "running" || item.state === "paused")
       const ended = sessions.find((item) => item.state === "stopped" || item.state === "failed_to_start")
-      const execution = await call(["jetbrains", "call", "veritly_run_status", "{}", ...args])
+      const execution = await call(["jetbrains", "call", "idectl_run_status", "{}", ...args])
       if (!Array.isArray(execution.runs) || !execution.runs.every(object)) throw new Error("IDE returned invalid execution list")
       const current = execution.runs.filter(object).filter((item) => !priorRuns.includes(item.id))
       const parent = current.find((item) => item.name === name && (item.phase === "starting" || item.phase === "running"))

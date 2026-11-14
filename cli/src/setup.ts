@@ -61,8 +61,8 @@ export async function runtime(name: string) {
   const item = service(name)
   await preflight()
   await adapter.connect()
-  const job = process.env.VERITLY_IDE_JOB
-  const dir = job ? fs.mkdtempSync(path.join(job, "secret-")) : fs.mkdtempSync(path.join(fs.existsSync("/dev/shm") ? "/dev/shm" : os.tmpdir(), "veritly-ide-"))
+  const job = process.env.IDECTL_JOB
+  const dir = job ? fs.mkdtempSync(path.join(job, "secret-")) : fs.mkdtempSync(path.join(fs.existsSync("/dev/shm") ? "/dev/shm" : os.tmpdir(), "idectl-"))
   fs.chmodSync(dir, 0o700)
   const resolved = await adapter.env(item, dir)
   const env = { ...resolved.env, PORT: String(port(item)) }

@@ -11,20 +11,21 @@ import { Repair } from "../src/core"
 import { load } from "../src/config"
 
 const cli = path.resolve(import.meta.dir, "../src/cli.ts")
+const example = path.resolve(import.meta.dir, "../../example")
 
 test("replace-mode services launch only inside a managed session and request repair otherwise", async () => {
-  const before = context("governor").state
-  expect(() => enqueue("Veritly AI Governor", "/unused")).toThrow(Repair)
-  expect(() => recover("Veritly AI Governor", "/unused")).toThrow(Repair)
-  expect(context("governor").state).toEqual(before)
-  const proc = Bun.spawn(["bun", cli, "route", "governor", "--json"], { stdout: "pipe", stderr: "pipe" })
+  const before = context("worker").state
+  expect(() => enqueue("Example Worker", "/unused")).toThrow(Repair)
+  expect(() => recover("Example Worker", "/unused")).toThrow(Repair)
+  expect(context("worker").state).toEqual(before)
+  const proc = Bun.spawn(["bun", cli, "route", "worker", "--json"], { cwd: example, stdout: "pipe", stderr: "pipe" })
   const output = new Response(proc.stdout).text()
   const error = await new Response(proc.stderr).json()
   expect(await proc.exited).toBe(1)
   expect(await output).toBe("")
   expect(error).toMatchObject({ code: "environment_repair_required", retryable: false })
-  expect(error.error).toContain("debug up governor")
-  expect(context("governor").state).toEqual(before)
+  expect(error.error).toContain("debug up worker")
+  expect(context("worker").state).toEqual(before)
 })
 
 test("project config is validated and owns every service definition", () => {
@@ -55,7 +56,7 @@ test("project config is validated and owns every service definition", () => {
 
 test("startup selection errors are JSON and explain frontend debugger selection", async () => {
   for (const args of [["--service"], ["--service", "unknown"], ["--service", "frontend"]]) {
-    const proc = Bun.spawn(["bun", cli, "debug", "status", ...args], { stdout: "pipe", stderr: "pipe" })
+    const proc = Bun.spawn(["bun", cli, "debug", "status", ...args], { cwd: example, stdout: "pipe", stderr: "pipe" })
     const output = new Response(proc.stdout).text()
     const error = await new Response(proc.stderr).json()
     expect(await proc.exited).toBe(1)
@@ -71,8 +72,8 @@ test("startup selection errors are JSON and explain frontend debugger selection"
 
 test("JSON stdin accepts a piped object and rejects an empty pipe", async () => {
   for (const value of ["", '{"condition":"name === \\"projects\\""}']) {
-    const proc = Bun.spawn(["bun", "-e", 'import { input } from "./src/core"; console.log(JSON.stringify(await input(["-"])))'], {
-      cwd: path.resolve(import.meta.dir, ".."),
+    const proc = Bun.spawn(["bun", "-e", `import { input } from "${path.resolve(import.meta.dir, "../src/core")}"; console.log(JSON.stringify(await input(["-"])))`], {
+      cwd: example,
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -108,9 +109,9 @@ test("an explicit project selects its recorded active IDE and rejects ambiguity"
 test("readiness reports a missing service instead of claiming it is ready", async () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), "ide-wait-"))
   try {
-    expect(await wait("server", project, 0.1)).toMatchObject({ ok: false, phase: "missing", service: "server" })
+    expect(await wait("api", project, 0.1)).toMatchObject({ ok: false, phase: "missing", service: "api" })
     await expect(wait("unknown", project, 0.1)).rejects.toThrow("Unknown service")
-    await expect(wait("server", project, 0)).rejects.toThrow("--timeout")
+    await expect(wait("api", project, 0)).rejects.toThrow("--timeout")
   } finally {
     fs.rmdirSync(project)
   }
@@ -123,30 +124,28 @@ test("rejects malformed debugger lists instead of reporting them as empty", () =
 })
 
 test("prints shell-friendly help", async () => {
-  const proc = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn(["bun", cli, "help"], { cwd: example, stdout: "pipe", stderr: "pipe" })
   const help = await new Response(proc.stdout).text()
-  expect(help).toContain("veritly-ide mcp tools")
-  expect(help).toContain("veritly-ide debug commands [TOOL] | TOOL [JSON|-]")
+  expect(help).toContain("idectl mcp tools")
+  expect(help).toContain("idectl debug commands [TOOL] | TOOL [JSON|-]")
+  expect(help).toContain("idectl debug up|down api|worker")
   expect(await proc.exited).toBe(0)
 })
 
 test("nested debugger help works without selecting or contacting an IDE", async () => {
-  const proc = Bun.spawn(["bun", cli, "debug", "vars", "--help", "--port", "1"], { stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn(["bun", cli, "debug", "vars", "--help", "--port", "1"], { cwd: example, stdout: "pipe", stderr: "pipe" })
   expect(await new Response(proc.stdout).text()).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
   expect(await new Response(proc.stderr).text()).toBe("")
   expect(await proc.exited).toBe(0)
 })
 
 test("documents the inspection commands and the project config", async () => {
-  const help = Bun.spawn(["bun", cli, "help"], { stdout: "pipe", stderr: "pipe" })
+  const help = Bun.spawn(["bun", cli, "help"], { cwd: example, stdout: "pipe", stderr: "pipe" })
   const text = await new Response(help.stdout).text()
   expect(text).toContain("debug browser|configs|sessions|status|wait|inspect|vars")
   expect(text).toContain("idectl.json")
   expect(await help.exited).toBe(0)
 
-
-  const skill = await Bun.file(path.resolve(import.meta.dir, "../../../.agents/skills/veritly-ide/SKILL.md")).text()
-  expect(skill).toContain("DEBUG.md")
 })
 
 test("finds only debug browsers owned by the selected IDE", () => {
@@ -172,6 +171,7 @@ test("rejects a non-IDE listener without sending it an MCP request", async () =>
   })
   try {
     const proc = Bun.spawn(["bun", cli, "debug", "status", "--port", String(server.port)], {
+      cwd: example,
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -215,19 +215,24 @@ test("selects each runtime and points the small project at real source without c
   }
 })
 
-test("prepares the shared Data configuration and Rust toolchain without copying credentials", () => {
+test("prepares a shared Cargo configuration and Rust toolchain without copying credentials", () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ide-data-")))
   try {
-    const component = path.join(root, "packages/veritly-data/runtime")
+    const component = path.join(root, "packages/data/runtime")
     fs.mkdirSync(path.join(component, "src"), { recursive: true })
     fs.mkdirSync(path.join(root, ".run"))
     fs.writeFileSync(path.join(component, "Cargo.toml"), "")
-    fs.copyFileSync(path.resolve(import.meta.dir, "../../../.run/Veritly_Data.run.xml"), path.join(root, ".run/Veritly_Data.run.xml"))
+    fs.writeFileSync(path.join(root, ".run/Data.run.xml"), `<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Data" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="run --locked --package data-runtime --bin data-runtime" />
+    <option name="workingDirectory" value="file://$PROJECT_DIR$/packages/data" />
+  </configuration>
+</component>`)
     const value = scope(root, component, root)
     prepare(value)
-    const cfg = fs.readFileSync(path.join(value.project, ".idea/runConfigurations/Veritly_Data.xml"), "utf8")
-    expect(cfg).toContain(`file://${root}/packages/veritly-data`)
-    expect(cfg).toContain("veritly-data-runtime")
+    const cfg = fs.readFileSync(path.join(value.project, ".idea/runConfigurations/Data.xml"), "utf8")
+    expect(cfg).toContain(`file://${root}/packages/data`)
+    expect(cfg).toContain("data-runtime")
     expect(cfg).not.toContain("DATABASE_URL")
     expect(fs.readFileSync(path.join(value.project, ".idea/workspace.xml"), "utf8")).toContain("toolchainHomeDirectory")
   } finally {
@@ -243,7 +248,7 @@ test("maps browser source URLs to this checkout without changing the indexing sc
     const component = path.join(root, "packages/web")
     const project = path.join(dir, "project")
     expect(browser(root, component, project, "https://preview.test/assets/frame.html?a=1&b=2")).toBe(true)
-    const file = path.join(project, ".idea/runConfigurations/Veritly_Browser.xml")
+    const file = path.join(project, ".idea/runConfigurations/Example_Browser.xml")
     const xml = fs.readFileSync(file, "utf8")
     expect(xml).toContain('uri="https://preview.test/assets/frame.html?a=1&amp;b=2"')
     expect(xml).toContain('useFirstLineBreakpoints="false"')
@@ -283,7 +288,7 @@ test("rejects a non-browser attach listener without sending it HTTP", async () =
     },
   })
   try {
-    const proc = Bun.spawn(["bun", cli, "open", path.resolve(import.meta.dir, ".."), "--url", "https://preview.test/", "--attach", `http://127.0.0.1:${server.port}`], { stdout: "pipe", stderr: "pipe" })
+    const proc = Bun.spawn(["bun", cli, "open", path.join(example, "web"), "--url", "https://preview.test/", "--attach", `http://127.0.0.1:${server.port}`], { cwd: example, stdout: "pipe", stderr: "pipe" })
     const error = await new Response(proc.stderr).json()
     expect(await proc.exited).toBe(1)
     expect(error.error).toContain("no probe sent")

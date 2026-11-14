@@ -1,5 +1,5 @@
 <idea-plugin>
   <extensions defaultExtensionNs="com.intellij">
-    <mcpServer.mcpToolset implementation="com.veritly.ide.Cargo"/>
+    <mcpServer.mcpToolset implementation="com.idectl.ide.Cargo"/>
   </extensions>
 </idea-plugin>

@@ -26,18 +26,18 @@ test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after
     hostname: "127.0.0.1",
     port: 0,
     fetch(req) {
-      if (req.headers.get("cookie")?.includes("veritly-session=test-session")) state.authenticated = true
+      if (req.headers.get("cookie")?.includes("session=test-session")) state.authenticated = true
       if (new URL(req.url).pathname === "/state") return Response.json(state)
       return new Response(`<!doctype html><div id="root"></div><script>
         setInterval(async () => {
           if (!(await (await fetch('/state')).json()).mounted) return
           document.getElementById('root').innerHTML = '<main>ready</main>'
-          document.documentElement.dataset.veritlyMount = 'complete'
+          document.documentElement.dataset.mount = 'complete'
         }, 50)
       </script>`, { headers: { "Content-Type": "text/html" } })
     },
   })
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "veritly-ide-browser-"))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "idectl-browser-"))
   const url = `http://127.0.0.1:${server.port}/`
   const proc = Bun.spawn([Bun.which("chromium")!, "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--remote-debugging-port=0", `--user-data-dir=${dir}`, url], { stdout: "ignore", stderr: "ignore" })
   try {
@@ -46,7 +46,7 @@ test.skipIf(!Bun.which("chromium"))("observes an actual browser before and after
     while (!fs.existsSync(file) && Date.now() < deadline) await Bun.sleep(50)
     if (!fs.existsSync(file)) throw new Error("Chromium did not start its debug endpoint")
     const endpoint = `http://127.0.0.1:${fs.readFileSync(file, "utf8").split("\n")[0]}`
-    await inject(endpoint, url, [{ name: "veritly-session", value: "test-session" }])
+    await inject(endpoint, url, [{ name: "session", value: "test-session" }])
     const limit = Date.now() + 3000
     while (!state.authenticated && Date.now() < limit) await Bun.sleep(50)
     expect(state.authenticated).toBe(true)
