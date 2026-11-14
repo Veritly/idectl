@@ -128,7 +128,10 @@ export function lifecycle(ctx: Context) {
     if (process.platform === "linux") argv.unshift("setsid")
     const log = file.replace(/\.json$/, ".log")
     const fd = fs.openSync(log, "a", 0o600)
-    const proc = Bun.spawn(argv, {
+    // A project already loaded, or launched in the last 90s, needs no launcher: each extra launcher is another JVM that waits on the busy IDE.
+    const launched = object(previous) && typeof previous.launched === "number" ? previous.launched : undefined
+    const recent = launched !== undefined && Date.now() - launched < 90_000
+    const proc = loaded.value || recent ? undefined : Bun.spawn(argv, {
       cwd: root,
       env: { ...process.env, DISPLAY: display, XAUTHORITY: auth },
       stdin: "ignore",
@@ -136,7 +139,7 @@ export function lifecycle(ctx: Context) {
       stderr: fd,
     })
     fs.closeSync(fd)
-    proc.unref()
+    proc?.unref()
     const old = object(previous) && previous.owned === true && typeof previous.token === "string" &&
       previous.closed !== true && typeof previous.pid === "number" && stamp(previous.pid) === previous.token
       ? { pid: previous.pid, token: previous.token }
@@ -145,11 +148,12 @@ export function lifecycle(ctx: Context) {
       ide: ide.id,
       project: cfg.project,
       source: cfg.source,
-      pid: old ? old.pid : proc.pid,
-      token: old ? old.token : process.platform === "linux" ? stamp(proc.pid) : undefined,
+      pid: old ? old.pid : proc ? proc.pid : listener?.pid,
+      token: old ? old.token : proc && process.platform === "linux" ? stamp(proc.pid) : undefined,
       owned: Boolean(old) || (process.platform === "linux" && !listener),
       log,
       closed: false,
+      launched: proc ? Date.now() : launched,
       url: url ? new URL(url).href : object(previous) && typeof previous.url === "string" ? previous.url : undefined,
       endpoint: attach ? address(attach).origin : url ? undefined : object(previous) && typeof previous.endpoint === "string" ? previous.endpoint : undefined,
     }
@@ -157,7 +161,7 @@ export function lifecycle(ctx: Context) {
     const waiting = { reason: "Waiting for the IDE and Debugger MCP project to load" }
     const deadline = Date.now() + 20_000
     while (Date.now() < deadline) {
-      if (proc.exitCode !== null && proc.exitCode !== 0)
+      if (proc && proc.exitCode !== null && proc.exitCode !== 0)
         throw new Error(`${ide.name} launch failed (${proc.exitCode}); inspect ${log}`)
       const ready = await attempt(async () => {
         const live = (await endpoints()).find((item) => item.id === ide.id)
