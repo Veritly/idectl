@@ -33,6 +33,7 @@ test("project config is validated and owns every service definition", () => {
   const target = { project: "app", configuration: "App", health: "/", port: "APP_PORT", workload: "app", agent: "sidecar", mode: "intercept" }
   const write = (value: unknown) => fs.writeFileSync(path.join(dir, "idectl.json"), JSON.stringify(value))
   const base = {
+    cli: "idectl",
     env: ".env", state: ".state", adapter: { type: "none" },
     frontend: { ...target, browser: "Browser", url: "APP_URL", mounted: "true" },
     services: { api: { ...target, configuration: "Api", binary: "target/api", container: "api" } },
@@ -212,6 +213,23 @@ test("selects each runtime and points the small project at real source without c
     expect(() => scope(root, dir, dir)).toThrow("repository root")
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("a Rust project indexes its whole Cargo workspace so sibling crates are searchable", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ide-workspace-")))
+  try {
+    const base = path.join(root, "packages/data")
+    for (const crate of ["runtime", "service"]) {
+      fs.mkdirSync(path.join(base, crate, "src"), { recursive: true })
+      fs.writeFileSync(path.join(base, crate, "Cargo.toml"), `[package]\nname = "${crate}"\n`)
+    }
+    fs.writeFileSync(path.join(base, "Cargo.toml"), "[workspace]\nmembers = [\"runtime\", \"service\"]\n")
+    const value = scope(root, path.join(base, "runtime"), root)
+    expect(value.content).toBe(base)
+    expect(value.component).toBe(path.join(base, "runtime"))
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
   }
 })
 

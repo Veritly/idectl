@@ -2,7 +2,9 @@ import path from "node:path"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
-import { cfg, name as bin, service as find } from "./config"
+import { cfg, service as find } from "./config"
+
+const bin = cfg.cli
 import { adapter } from "./adapter"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"

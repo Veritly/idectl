@@ -6,7 +6,7 @@ import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service, launchable } from "./job"
 import { vars, preflight, attach as link, detach as unlink } from "./service"
 import { adapter } from "./adapter"
-import { cfg, known, name as bin, service as find, shm } from "./config"
+import { cfg, known, service as find, shm } from "./config"
 import { login } from "./auth"
 import { close as closeBrowser } from "./browser"
 
@@ -71,9 +71,9 @@ export function owner() {
 export async function blocked(id: string) {
   const active = owner()
   if (!active || !active.context.includes("--session") || active.context.at(-1) !== id) return
-  const cfg = context(active.service)
-  if (!cfg.state || cfg.state.phase !== "ready" || typeof cfg.state.pid !== "number" || typeof cfg.state.token !== "string" || stamp(cfg.state.pid) !== cfg.state.token) return
-  const debug = debuggerClient({ chosen: "rustrover", project: cfg.project })
+  const found = context(active.service)
+  if (!found.state || found.state.phase !== "ready" || typeof found.state.pid !== "number" || typeof found.state.token !== "string" || stamp(found.state.pid) !== found.state.token) return
+  const debug = debuggerClient({ chosen: "rustrover", project: found.project })
   const ide = await debug.endpoint()
   const paused = rows(await debug.tool(ide, "list_debug_sessions"), "sessions")
     .filter((row) => (row.runConfigurationName === service(active.service) || row.name === service(active.service)) && row.state === "paused")
@@ -85,8 +85,8 @@ export async function blocked(id: string) {
       if (!session) throw new Error("Paused backend session has no ID")
       return {
         session,
-        inspect: `${bin} debug stack --service ${active.service} --session ${session}`,
-        resume: `${bin} debug resume --service ${active.service} --session ${session}`,
+        inspect: `${cfg.cli} debug stack --service ${active.service} --session ${session}`,
+        resume: `${cfg.cli} debug resume --service ${active.service} --session ${session}`,
       }
     }),
     hint: "The browser is still running while its managed backend is paused. Inspect the backend using the printed command, resume it when ready, then run debug wait with the browser's same selectors; do not issue another step while the previous step is running.",

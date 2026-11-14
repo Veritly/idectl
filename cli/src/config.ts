@@ -21,6 +21,7 @@ export type Kubernetes = { type: "kubernetes"; namespace: string; skip: string[]
 export type Adapter = Kubernetes | { type: "none" }
 export type Config = {
   root: string
+  cli: string
   env: string
   state: string
   preflight?: string[]
@@ -109,6 +110,7 @@ export function load(dir: string): Config {
   if (services.frontend) throw new Error(`${file}: frontend is reserved; configure it under frontend`)
   return {
     root: dir,
+    cli: text(data.cli, "cli"),
     env: path.join(dir, text(data.env, "env")),
     state: path.join(dir, text(data.state, "state")),
     preflight: argv(data.preflight, "preflight"),

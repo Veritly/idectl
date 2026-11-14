@@ -5,6 +5,7 @@ Command-line control of JetBrains IDE debugging for agents and scripts: open pro
 - `cli/`: the `idectl` CLI (Bun). All output is JSON.
 - `plugin/`: the JetBrains lifecycle plugin. The CLI builds it from this directory with the installed RustRover and installs it into each JetBrains IDE it opens.
 - `example/`: a standalone project using the `none` adapter; the test suite runs against it.
+- `docs/debugging.md`: the debugging workflow. `skill/SKILL.md` is an agent skill that points at it.
 
 ## Project config
 

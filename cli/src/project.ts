@@ -22,7 +22,10 @@ export function scope(cwd: string, target: string, home = os.homedir()) {
   const ide = rust || fs.existsSync(path.join(component, "Cargo.toml")) ? "rustrover" : "webstorm"
   if (ide === "rustrover" && !fs.existsSync(path.join(component, "src")))
     throw new Error(`Choose a Rust component with a src directory, rather than a workspace: ${component}`)
-  const content = fs.existsSync(path.join(component, "src")) ? path.join(component, "src") : component
+  const workspace = ide === "rustrover"
+    ? ancestors(component, root).filter((dir) => dir !== root && fs.existsSync(path.join(dir, "Cargo.toml")) && /^\[workspace\]/m.test(fs.readFileSync(path.join(dir, "Cargo.toml"), "utf8"))).at(-1)
+    : undefined
+  const content = workspace || (fs.existsSync(path.join(component, "src")) ? path.join(component, "src") : component)
   const key = new Bun.CryptoHasher("sha256").update(root).digest("hex").slice(0, 12)
   const project = path.join(home, ".local/share/idectl/projects", key, path.relative(root, component))
   return { root, source, file, component, content, project, ide }

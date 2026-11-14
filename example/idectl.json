@@ -1,4 +1,5 @@
 {
+  "cli": "idectl",
   "env": ".env",
   "state": ".idectl",
   "adapter": { "type": "none" },

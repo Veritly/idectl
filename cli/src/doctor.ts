@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { root, ides, attempt, launcher, sockets, opened, selection, projects, quote } from "./core"
-import { cfg, name } from "./config"
+import { cfg } from "./config"
 import { adapter } from "./adapter"
 import { port, preflight } from "./service"
 import { jetbrains } from "./jetbrains"
@@ -28,7 +28,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
       phase: "selection_required",
       reason: "Multiple open IDE projects are expected; choose the project for this task before checking its health.",
       choices: (selected ? [selected] : active).flatMap((ide) => projects(ide).map((project) => ({
-        ide: ide.id, project, command: `${name} doctor --ide ${ide.id} --project ${quote(project)}`,
+        ide: ide.id, project, command: `${cfg.cli} doctor --ide ${ide.id} --project ${quote(project)}`,
       }))),
       hint: "Run the matching command from choices, then continue your task; selection_required is not an IDE or MCP health failure. For a Rust service, doctor --service NAME selects its project explicitly.",
     }
@@ -75,7 +75,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     ok: Object.values(checks).every(Boolean),
     phase: missing ? "project_not_open" : undefined,
     hint: missing
-      ? `${opts.source && selected ? `Run ${name} open ${quote(opts.source)} --ide ${selected.id}, then repeat doctor` : `Open the selected source component with ${name} open, then repeat doctor`}${opts.service ? `; debug up ${opts.service} also opens its required IDE projects automatically` : ""}. An unopened project is a preparation step, not a missing IDE installation.`
+      ? `${opts.source && selected ? `Run ${cfg.cli} open ${quote(opts.source)} --ide ${selected.id}, then repeat doctor` : `Open the selected source component with ${cfg.cli} open, then repeat doctor`}${opts.service ? `; debug up ${opts.service} also opens its required IDE projects automatically` : ""}. An unopened project is a preparation step, not a missing IDE installation.`
       : undefined,
     root,
     env: cfg.env,
