@@ -424,14 +424,23 @@ async function worker(name: string, cleanup: boolean) {
     }
     // A WebStorm service is ready when its debug session runs and its own process answers the health path.
     // The IDE drops a session's console when its process exits, so keep the last output seen while the process starts.
-    const output = { tail: "" }
+    const output = { tail: "", resumes: 0 }
     const backend = async () => {
       if (!node) return call(["wait", name, ...rustarg, "--timeout", "3"])
       const id = object(state.backend) ? state.backend.id : undefined
       const live = (await sessions(rust)).find((row) => field(row, ["id", "sessionId"]) === id)
       if (!live || !["running", "paused"].includes(String(live.state)))
         return { ok: false, phase: "stopped", job: output.tail ? { error: `process output (last lines): ${output.tail}` } : undefined }
-      if (live.state === "paused") return { ok: false, phase: "paused" }
+      if (live.state === "paused") {
+        // Node's debugger stops every worker thread a runtime such as tsx starts; those pauses carry no breakpoint and only delay startup.
+        const status = await debug.tool(await debug.endpoint(), "get_debug_session_status", { project_path: rust, session_id: id }, 5000).catch(() => undefined)
+        if (object(status) && !status.breakpointHit && /worker/i.test(String(status.currentThread)) && output.resumes < 20) {
+          output.resumes += 1
+          await debug.tool(await debug.endpoint(), "resume_execution", { project_path: rust, session_id: id }, 5000)
+          return { ok: false, phase: "starting" }
+        }
+        return { ok: false, phase: "paused" }
+      }
       const health = await local(item)
       if (!health.ok) {
         const text = await debug.tool(await debug.endpoint(), "get_console_output", { project_path: rust, session_id: id }, 3000).catch(() => undefined)
