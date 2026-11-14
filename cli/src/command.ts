@@ -276,7 +276,9 @@ export async function main() {
       const managed = ide.id === "webstorm" && !scope ? sessionOwner() : undefined
       if (managed) {
         const current = project || (await attempt(async () => opened(ide))).value
-        if (current !== managed.project)
+        // An attach project holds source for processes a service spawns; it is never the managed browser project.
+        const attached = Object.values(cfg.attach).some((item) => projectScope(root, item.project).project === current)
+        if (current !== managed.project && !attached)
           throw new Error(`The managed ${managed.service} browser belongs to ${managed.project}; set frontend breakpoints using ${managed.context.join(" ")}. Shared-source breakpoints belong to this browser project too.`)
       }
       const opts = await input(args)
