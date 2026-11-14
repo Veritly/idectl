@@ -76,7 +76,43 @@ export function kubernetes(opts: Kubernetes): Adapter {
     return list.every((row) => row.host === "127.0.0.1" && row.replace === (item.mode === "replace") && (item.mode === "replace" || row.port === port))
   }
 
-  async function attach(item: Target, port: number) {
+  async function summary(item: Target) {
+    const list = await pods(item)
+    return list.filter((pod) => !(object(pod.status) && pod.status.phase === "Failed")).map((pod) => {
+      const name = object(pod.metadata) && typeof pod.metadata.name === "string" ? pod.metadata.name.split("-").at(-1) : "pod"
+      const gone = object(pod.metadata) && Boolean(pod.metadata.deletionTimestamp)
+      const rows = object(pod.status) && Array.isArray(pod.status.containerStatuses) ? pod.status.containerStatuses.filter(object) : []
+      const containers = object(pod.spec) && Array.isArray(pod.spec.containers)
+        ? pod.spec.containers.filter(object).map((row) => `${String(row.name)}${rows.some((state) => state.name === row.name && state.ready === true) ? "" : " (starting)"}`)
+        : []
+      return `pod ${name}${gone ? " terminating" : ""}: ${containers.join(", ") || "pending"}`
+    }).join("; ") || "no pods yet"
+  }
+
+  async function budget(item: Target) {
+    const deployment = parse(await command(["kubectl", "-n", ns, "get", "deployment", item.workload, "-o", "json"], root, 5000))
+    const labels = object(deployment) && object(deployment.spec) && object(deployment.spec.template) && object(deployment.spec.template.metadata) && object(deployment.spec.template.metadata.labels)
+      ? deployment.spec.template.metadata.labels
+      : {}
+    const list = parse(await command(["kubectl", "-n", ns, "get", "poddisruptionbudgets", "-o", "json"], root, 5000))
+    const items = object(list) && Array.isArray(list.items) ? list.items.filter(object) : []
+    return items.some((row) => object(row.spec) && object(row.spec.selector) && object(row.spec.selector.matchLabels) &&
+      Object.entries(row.spec.selector.matchLabels).every(([key, value]) => labels[key] === value) &&
+      object(row.status) && row.status.disruptionsAllowed === 0)
+  }
+
+  async function watch(item: Target, run: Promise<unknown>, note: (text: string) => void, label: string) {
+    const state = { done: false }
+    const result = run.finally(() => { state.done = true })
+    while (!state.done) {
+      const text = await attempt(() => summary(item))
+      if (!state.done && text.ok) note(`${label}; ${text.value}`)
+      await Promise.race([result.catch(() => undefined), Bun.sleep(2000)])
+    }
+    return result
+  }
+
+  async function attach(item: Target, port: number, note: (text: string) => void) {
     const before = await routed(item)
     if (before) {
       if (!mine(item, port, before.attachments))
@@ -88,7 +124,12 @@ export function kubernetes(opts: Kubernetes): Adapter {
       ? ["telepresence", "replace", item.workload, "--namespace", ns, "--container", item.container || "", "--mount", "false"]
       : ["telepresence", "intercept", item.workload, "--namespace", ns, "--port", `${port}:http`, ...(item.service ? ["--service", item.service] : []), "--mount", "false", ...(item.agent === "node" ? ["--node-agent"] : [])]
     if (item.mode === "replace" && !item.container) throw new Error(`${item.id}: replace requires a container`)
-    await command([...args, "--format", "json", "--progress", "quiet"], root, item.mode === "replace" ? 200_000 : 20_000)
+    const run = command([...args, "--format", "json", "--progress", "quiet"], root, item.mode === "replace" ? 200_000 : 20_000)
+    if (item.mode === "replace") {
+      const blocked = await attempt(() => budget(item))
+      await watch(item, run, note, `Stopping ${item.workload}/${item.container}${blocked.ok && blocked.value ? "; its disruption budget allows no eviction, so Telepresence restarts the workload after about 30s" : ""}`)
+    }
+    await run
     const after = await routed(item)
     if (!after || !mine(item, port, after.attachments)) throw new Error(`Telepresence did not attach ${item.workload} to the local process`)
     return { created: true, ids: after.ids, attachments: after.attachments }
@@ -111,7 +152,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
       !list.some((pod) => object(pod.spec) && Array.isArray(pod.spec.containers) && !pod.spec.containers.filter(object).some((row) => row.name === item.container) && !(object(pod.metadata) && pod.metadata.deletionTimestamp))
   }
 
-  async function detach(item: Target, port: number) {
+  async function detach(item: Target, port: number, note: (text: string) => void) {
     const current = await routed(item)
     if (!current) return { detached: false }
     if (!mine(item, port, current.attachments))
@@ -121,7 +162,9 @@ export function kubernetes(opts: Kubernetes): Adapter {
     const until = Date.now() + 120_000
     while (Date.now() < until) {
       if (await restored(item)) return { detached: true, restored: true }
-      await Bun.sleep(1000)
+      const text = await attempt(() => summary(item))
+      if (text.ok) note(`Restoring ${item.workload}/${item.container}; ${text.value}`)
+      await Bun.sleep(2000)
     }
     throw new Error(`${item.workload} was detached but its ${item.container} container is not running again yet; check kubectl -n ${ns} get pods`)
   }

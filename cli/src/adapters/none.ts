@@ -12,8 +12,8 @@ export function none(): Adapter {
     async env() {
       return { env: {}, paths: [] }
     },
-    async attach(item, port) {
-      return { created: false, ids: [], attachments: [], local: `http://127.0.0.1:${port}`, target: item.id }
+    async attach() {
+      return { created: false, ids: [], attachments: [] }
     },
     async detach() {
       return { detached: false }

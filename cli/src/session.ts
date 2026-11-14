@@ -301,8 +301,9 @@ async function worker(name: string, cleanup: boolean) {
   }
   async function attach(phase: string) {
     update(phase, { route: { phase: "creating" } })
-    const value = await link(item)
+    const value = await link(item, (detail) => update(phase, { detail }))
     state.route = { owned: value.created, ids: value.ids, mode: item.mode }
+    state.detail = undefined
     save(folder, state)
   }
   async function clean() {
@@ -322,7 +323,7 @@ async function worker(name: string, cleanup: boolean) {
       if (state.route.owned !== true) { state.route = undefined; save(folder, state); return }
       const current = await adapter.routed(item)
       if (current && JSON.stringify(current.ids) !== JSON.stringify(state.route.ids)) throw new Error("The attachment changed; it was preserved")
-      if (current) await unlink(item)
+      if (current) await unlink(item, (detail) => update("stopping", { cleanup: "running", detail }))
       state.route = undefined
       save(folder, state)
     }
@@ -370,7 +371,7 @@ async function worker(name: string, cleanup: boolean) {
       await Promise.all([webarg, rustarg].map((args) => call(["jetbrains", "call", "idectl_save_project", "{}", ...args])))
     })
     if (errors.length) throw new Error(errors.join("; "))
-    update("stopped", { cleanup: "complete", cleanupError: undefined })
+    update("stopped", { cleanup: "complete", cleanupError: undefined, detail: undefined })
   }
 
   try {
@@ -438,7 +439,7 @@ async function worker(name: string, cleanup: boolean) {
     const browser = await debug.launchedBrowser(ide, { endpoint: state.browser.endpoint })
     update("authenticating browser")
     await login(browser.endpoint, url)
-    update("ready", { url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "not_requested" })
+    update("ready", { detail: undefined, url, frontendStatus: "ready", backendStatus: "ready", backendJob: undefined, reason: undefined, resume: undefined, browser: { ...(object(state.browser) ? state.browser : {}), endpoint: browser.endpoint }, cleanup: "not_requested" })
     while (!stopped()) {
       await Bun.sleep(3000)
       if (stopped()) break

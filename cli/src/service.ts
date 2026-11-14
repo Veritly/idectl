@@ -60,18 +60,18 @@ export async function local(item: Service) {
   return { ...(await health(item)), owner: true }
 }
 
-export async function detach(item: Target) {
+export async function detach(item: Target, note: (text: string) => void = () => {}) {
   await preflight()
   await adapter.connect()
-  return { ok: true, ...(await adapter.detach(item, port(item))) }
+  return { ok: true, ...(await adapter.detach(item, port(item), note)) }
 }
 
-export async function attach(item: Service | Frontend) {
+export async function attach(item: Service | Frontend, note: (text: string) => void = () => {}) {
   await preflight()
   await adapter.connect()
   if (item.mode === "intercept" && "binary" in item && !(await owned(item)))
     throw new Error(`The local ${item.id} binary is not listening on port ${port(item)}; run debug start ${item.id}, then wait ${item.id} --service ${item.id}`)
   if (item.mode === "intercept" && !(await health(item)).ok)
     throw new Error(`Local ${item.id} is not ready on port ${port(item)}; wait for it before routing`)
-  return { ok: true, ...(await adapter.attach(item, port(item))) }
+  return { ok: true, ...(await adapter.attach(item, port(item), note)) }
 }

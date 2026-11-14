@@ -462,7 +462,7 @@ export async function main() {
           : object(result) && object(result.blocker)
             ? { ...pause(result), blocking: result.blocker, hint: result.blocker.hint }
           : object(result) && result.state !== "paused"
-            ? { ...pause(result), diagnosis: await diagnosis(ide), hint: "Trigger the operation after setting breakpoints (reload the same app page for load requests), then wait again; no pause alone does not prove a binding failure." }
+            ? { ...pause(result), diagnosis: await diagnosis(ide), hint: ide.id === "webstorm" ? "Trigger the operation after setting breakpoints (reload the same app page for load requests), then wait again; no pause alone does not prove a binding failure." : "Trigger the code path after setting breakpoints: send a request, perform the UI action, or wait for the service's own background interval, then wait again; no pause alone does not prove a binding failure." }
             : pause(result),
       )
     } else if (action === "inspect") {

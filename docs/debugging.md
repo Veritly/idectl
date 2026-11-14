@@ -20,7 +20,7 @@ Only one managed session can own the frontend at a time. Existing debug processe
 Routing modes, from each service's `mode`:
 
 - `intercept`: the environment keeps its own copy running while its traffic goes to the IDE process. Use `route NAME` / `unroute NAME` to do this manually once a local service is ready.
-- `replace`: the environment's copy is stopped before the local process starts and restored after it stops. Use it for queue workers. Only `debug up NAME` starts such a service, because the session owns the stop and restore; other launches return `environment_repair_required`. That error means stop and request repair, not retry or launch manually.
+- `replace`: the environment's copy is stopped before the local process starts and restored after it stops. While it waits, the session's `detail` reports the workload's pods, so a disruption-budget wait is distinguishable from a stall. Use it for queue workers. Only `debug up NAME` starts such a service, because the session owns the stop and restore; other launches return `environment_repair_required`. That error means stop and request repair, not retry or launch manually.
 
 To trigger and track a request across a breakpoint, run `debug request NAME /PATH`. It returns an ID immediately; inspect the pause, resume, then `wait request ID --json` reads that response. Requests are GETs and stay pending while the session is active; `--timeout` sets a limit up to 60s.
 
@@ -43,7 +43,7 @@ Remove stale session-owned breakpoints; preserve disabled IDE-default or user-ow
 
 ## JetBrains tools
 
-`jetbrains tools [FILTER]` lists the IDE's tools, `jetbrains schema TOOL` shows arguments, and `jetbrains call TOOL JSON` calls one (`-` reads JSON from stdin, `--full` removes the output limit, `--timeout SECONDS` changes the deadline). File tools only see the generated IDE project's content root. `debug commands [TOOL]` lists debugger tools with their CLI aliases; raw tool names use underscores.
+`jetbrains tools [FILTER]` lists the IDE's tools, `jetbrains schema TOOL` shows arguments, and `jetbrains call TOOL JSON` calls one (`-` reads JSON from stdin, `--full` removes the output limit, `--timeout SECONDS` changes the deadline). Use `search_text` or `search_symbol` to locate code, then read it with ordinary file tools: the IDE's `read_file` can elide lines despite `offset` and `limit`, and its file tools only see the generated project's content root, so pass absolute paths. `debug commands [TOOL]` lists debugger tools with their CLI aliases; raw tool names use underscores.
 
 ## Browser checks
 
