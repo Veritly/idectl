@@ -1,0 +1,16 @@
+<idea-plugin>
+  <id>com.veritly.ide.lifecycle</id>
+  <name>Veritly IDE Lifecycle</name>
+  <vendor>Veritly</vendor>
+  <description>Expose IDE run configuration lifecycle state to the MCP server.</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.lang</depends>
+  <depends>com.intellij.mcpServer</depends>
+  <depends optional="true" config-file="rust.xml">com.jetbrains.rust</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <mcpServer.mcpToolset implementation="com.veritly.ide.Lifecycle"/>
+  </extensions>
+  <projectListeners>
+    <listener class="com.veritly.ide.Listener" topic="com.intellij.execution.ExecutionListener"/>
+  </projectListeners>
+</idea-plugin>
