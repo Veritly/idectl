@@ -58,7 +58,7 @@ A service that starts short-lived child processes (a Node driver per request) ca
 "attach": { "drivers": { "project": "packages/x/drivers", "configuration": "Drivers", "port": "9229", "file": ".state/inspect" } }
 ```
 
-The configuration is a WebStorm `ChromiumRemoteDebugType` run configuration on that port, **without** `restartOnDisconnect`: a session started with it cannot be stopped through the debugger API. `debug attach NAME` writes the port file, opens the project, and starts a small supervisor that starts a new attach session whenever the previous one ended with its process. `debug detach NAME` removes the file first, then stops the supervisor and session. Spawned processes pause at start until a debugger connects, so always detach.
+The configuration is a WebStorm `ChromiumRemoteDebugType` run configuration on that port with `restartOnDisconnect="true"`, so one session catches every process the service spawns. `debug attach NAME` writes the port file, opens the project and starts the session; `debug detach NAME` removes the file first, then stops the session through `idectl_run_stop`. Stop it only that way: the debugger API's stop is treated as a dropped connection and the session reconnects. Spawned processes pause at start until a debugger connects, so always detach.
 
 To debug a browser without a session, either `open PATH --url URL` and start the returned configuration, then pass its `browser.endpoint` as `debugEndpoint` to T3 `preview_open`; or open a T3 debug browser first and pass its endpoint to `open PATH --url URL --attach ENDPOINT`.
 `ready PATH --url URL` checks each stage through the app's first render, using the frontend's `mounted` expression. It proves rendered content, not authentication or backend readiness.

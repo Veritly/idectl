@@ -6,7 +6,7 @@ Cargo attachment enables Rust stepping filters for the standard library and exte
 `debuggerPatch` builds the pinned Debugger MCP 5.4.0 dependency with corrected collection of automatically expanded frame scope groups; it requires `-PdebuggerPath=PATH_TO_VERIFIED_UPSTREAM_JAR`.
 The collector source under `src/debugger` derives from hechtcarmel/jetbrains-debugger-mcp-plugin revision `411dc38420824a6b59a56d6685285a7b02a0a053`; its license is preserved there.
 
-RustRover's standard Cargo build task emits a separate `Build ` execution with its own ID. IDs are assigned per IDE execution because some JetBrains build events use execution ID zero. Only cancel an execution while its `cancellable` field is true.
+RustRover's standard Cargo build task emits a separate `Build ` execution with its own ID. IDs are assigned per IDE execution because some JetBrains build events use execution ID zero. Only cancel an execution while its `cancellable` field is true. Stopping uses the IDE Stop button's own path, so a configuration that reconnects after a disconnect stays stopped.
 
 `idectl_trust_project` trusts a specific generated project inside `~/.local/share/idectl/projects`; it does not change the IDE's general project-trust policy. `idectl_reload_project` reloads `.idea` files that idectl rewrote while the project is open. `idectl_open_windows` selects the new-window preference for additional projects.
 

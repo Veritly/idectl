@@ -5,6 +5,7 @@ import com.intellij.configurationStore.StoreReloadManager
 import com.intellij.configurationStore.saveSettings
 import com.intellij.execution.RunManager
 import com.intellij.execution.ExecutionListener
+import com.intellij.execution.impl.ExecutionManagerImpl
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.ide.GeneralSettings
@@ -127,7 +128,8 @@ class Lifecycle : McpToolset {
     val runs = currentCoroutineContext().project.service<Runs>()
     val run = runs.rows[id] ?: error("Execution $id was not found")
     val handler = runs.handlers[id] ?: error("Execution $id is ${run.phase}; no process handler is available")
-    handler.destroyProcess()
+    // The Stop button's own path: it marks the termination as requested, so a session with reconnect enabled stays stopped.
+    ExecutionManagerImpl.stopProcess(handler)
     return Gson().toJson(mapOf("id" to id, "phase" to "stopping"))
   }
 }

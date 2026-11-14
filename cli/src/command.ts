@@ -17,7 +17,7 @@ import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
 import { scope as projectScope } from "./project"
-import { on as attachOn, off as attachOff, watch as attachWatch } from "./attach"
+import { on as attachOn, off as attachOff } from "./attach"
 
 const args = process.argv.slice(2)
 
@@ -305,12 +305,6 @@ export async function main() {
       const name = args.shift()
       if (!name || args.length) throw new Error(`debug ${action} requires one service name`)
       print(action === "up" ? sessionUp(name) : sessionDown(name))
-      return 0
-    }
-    if (action === "attach-loop") {
-      const id = args.shift()
-      if (!id || args.length) throw new Error("debug attach-loop requires one attach name")
-      await attachWatch(id)
       return 0
     }
     if (action === "attach" || action === "detach") {
