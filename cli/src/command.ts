@@ -17,6 +17,7 @@ import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
 import { start as requestStart, wait as requestWait } from "./request"
 import { scope as projectScope } from "./project"
+import { on as attachOn, off as attachOff, watch as attachWatch } from "./attach"
 
 const args = process.argv.slice(2)
 
@@ -90,6 +91,7 @@ ${bin} route|unroute frontend|${names}
 ${bin} breakpoint set FILE LINE [--once] [--condition EXPRESSION] [JSON] | list | remove ID
 ${bin} debug browser|configs|sessions|status|wait|inspect|vars|stack|source|console|threads|frame [...]
 ${bin} debug up|down ${names}
+${bin} debug attach|detach ${Object.keys(cfg.attach).join("|")}   (processes a service spawns itself: write the inspect port file and attach WebStorm)
 ${bin} debug request SERVICE /PATH [--timeout SECONDS]
 ${bin} wait session SERVICE [--until ready|stopped] [--timeout SECONDS] [--json]
 ${bin} wait request ID [--timeout SECONDS] [--json]
@@ -303,6 +305,18 @@ export async function main() {
       const name = args.shift()
       if (!name || args.length) throw new Error(`debug ${action} requires one service name`)
       print(action === "up" ? sessionUp(name) : sessionDown(name))
+      return 0
+    }
+    if (action === "attach-loop") {
+      const id = args.shift()
+      if (!id || args.length) throw new Error("debug attach-loop requires one attach name")
+      await attachWatch(id)
+      return 0
+    }
+    if (action === "attach" || action === "detach") {
+      const id = args.shift()
+      if (!id || args.length) throw new Error(`debug ${action} requires one attach name (${Object.keys(cfg.attach).join("|")})`)
+      print(action === "attach" ? await attachOn(id) : await attachOff(id))
       return 0
     }
     if (action === "browser" && scope) {

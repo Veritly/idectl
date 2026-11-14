@@ -20,6 +20,8 @@ export type Ide = "rustrover" | "webstorm"
 export type Service = Target & { ide: Ide; binary?: string; container: string }
 export type Frontend = Target & { browser: string; url: string; mounted: string }
 export type Kubernetes = { type: "kubernetes"; namespace: string; skip: string[]; manager?: { namespace: string; release: string } }
+/** A debugger-attach configuration for processes the services spawn themselves; `file` holds the inspect port the spawner reads. */
+export type Attach = { project: string; configuration: string; port: string; file: string }
 export type Adapter = Kubernetes | { type: "none" }
 export type Config = {
   root: string
@@ -31,6 +33,7 @@ export type Config = {
   adapter: Adapter
   frontend: Frontend
   services: Record<string, Service>
+  attach: Record<string, Attach>
   test?: {
     configuration: string
     file: string
@@ -107,6 +110,7 @@ export function load(dir: string): Config {
   const hooks = data.hooks === undefined ? {} : record(data.hooks, "hooks")
   const front = record(data.frontend, "frontend")
   const services = record(data.services, "services")
+  const attach = data.attach === undefined ? {} : record(data.attach, "attach")
   const test = data.test === undefined ? undefined : record(data.test, "test")
   if (!Object.keys(services).length) throw new Error(`${file}: services must define at least one service`)
   if (services.frontend) throw new Error(`${file}: frontend is reserved; configure it under frontend`)
@@ -134,6 +138,16 @@ export function load(dir: string): Config {
         ide,
         binary: ide === "rustrover" ? text(item.binary, `services.${id}.binary`) : undefined,
         container: text(item.container, `services.${id}.container`),
+      }]
+    })),
+    attach: Object.fromEntries(Object.entries(attach).map(([id, value]) => {
+      const item = record(value, `attach.${id}`)
+      if (!/^\d+$/.test(text(item.port, `attach.${id}.port`))) throw new Error(`${file}: attach.${id}.port must be a number string`)
+      return [id, {
+        project: text(item.project, `attach.${id}.project`),
+        configuration: text(item.configuration, `attach.${id}.configuration`),
+        port: text(item.port, `attach.${id}.port`),
+        file: text(item.file, `attach.${id}.file`),
       }]
     })),
     test: test ? {

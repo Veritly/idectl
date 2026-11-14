@@ -52,6 +52,11 @@ test("project config is validated and owns every service definition", () => {
     expect(load(dir).services.api).toMatchObject({ ide: "webstorm", binary: undefined })
     write({ ...base, services: { frontend: base.services.api } })
     expect(() => load(dir)).toThrow("frontend is reserved")
+    const attach = { project: "drivers", configuration: "Drivers", port: "9229", file: ".state/inspect" }
+    write({ ...base, attach: { drivers: attach } })
+    expect(load(dir).attach.drivers).toEqual(attach)
+    write({ ...base, attach: { drivers: { ...attach, port: "x" } } })
+    expect(() => load(dir)).toThrow("attach.drivers.port must be a number string")
     write({ ...base, adapter: { type: "kubernetes", namespace: "dev" } })
     expect(() => load(dir)).toThrow("adapter.skip")
   } finally {

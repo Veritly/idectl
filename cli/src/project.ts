@@ -41,7 +41,7 @@ function xml(value: string) {
 }
 
 function configured() {
-  return new Set([cfg.frontend.configuration, cfg.frontend.browser, ...Object.values(cfg.services).map((item) => item.configuration)])
+  return new Set([cfg.frontend.configuration, cfg.frontend.browser, ...Object.values(cfg.services).map((item) => item.configuration), ...Object.values(cfg.attach).map((item) => item.configuration)])
 }
 
 export function prepare(value: ReturnType<typeof scope>) {
@@ -83,7 +83,7 @@ export function prepare(value: ReturnType<typeof scope>) {
     if (!name.endsWith(".run.xml")) continue
     const template = fs.readFileSync(path.join(value.root, ".run", name), "utf8")
     const type = value.ide === "rustrover" ? 'type="CargoCommandRunConfiguration"' : 'type="BunRunConfiguration"'
-    if (!template.includes(type) && !(value.ide === "webstorm" && (template.includes('type="JavascriptDebugType"') || template.includes('type="NodeJSConfigurationType"')))) continue
+    if (!template.includes(type) && !(value.ide === "webstorm" && (template.includes('type="JavascriptDebugType"') || template.includes('type="NodeJSConfigurationType"') || template.includes('type="ChromiumRemoteDebugType"')))) continue
     // A configuration with a missing program makes the IDE open a modal editor that blocks every later launch.
     const label = template.match(/<configuration[^>]* name="([^"]+)"/)?.[1]
     const program = template.match(/<option name="program" value="([^"]+)"/)?.[1] || template.match(/ path-to-js-file="([^"]+)"/)?.[1]
