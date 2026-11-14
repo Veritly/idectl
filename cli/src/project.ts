@@ -40,6 +40,10 @@ function xml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
+function configured() {
+  return new Set([cfg.frontend.configuration, cfg.frontend.browser, ...Object.values(cfg.services).map((item) => item.configuration)])
+}
+
 export function prepare(value: ReturnType<typeof scope>) {
   const dir = path.join(value.project, ".idea")
   fs.mkdirSync(dir, { recursive: true })
@@ -80,6 +84,11 @@ export function prepare(value: ReturnType<typeof scope>) {
     const template = fs.readFileSync(path.join(value.root, ".run", name), "utf8")
     const type = value.ide === "rustrover" ? 'type="CargoCommandRunConfiguration"' : 'type="BunRunConfiguration"'
     if (!template.includes(type) && !(value.ide === "webstorm" && template.includes('type="JavascriptDebugType"'))) continue
+    // A configuration with a missing program makes the IDE open a modal editor that blocks every later launch.
+    const label = template.match(/<configuration[^>]* name="([^"]+)"/)?.[1]
+    const program = template.match(/<option name="program" value="([^"]+)"/)?.[1]
+    if (value.ide === "webstorm" && label && program && configured().has(label) && !fs.existsSync(program.replaceAll("$PROJECT_DIR$", value.root)))
+      throw new Error(`.run/${name}: program ${program} does not exist; fix the path before launching ${label}`)
     save(path.join(configs, name.replace(".run.xml", ".xml")), template.replaceAll("$PROJECT_DIR$", xml(value.root)))
   }
 }
