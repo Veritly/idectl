@@ -21,6 +21,7 @@ export function none(): Adapter {
     async routed() {
       return undefined
     },
+    async repair() {},
     async url(item) {
       throw new Error(`${item.id} has no environment to route requests through; call the local service directly`)
     },

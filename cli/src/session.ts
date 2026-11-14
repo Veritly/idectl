@@ -318,6 +318,7 @@ async function worker(name: string, cleanup: boolean) {
       if (!object(state.route)) return
       if (state.route.phase === "creating") {
         if (await adapter.routed(item)) await unlink(item)
+        else await adapter.repair(item)
         state.route = undefined
         save(folder, state)
         return

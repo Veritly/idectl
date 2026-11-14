@@ -15,6 +15,8 @@ export type Adapter = {
   attach(item: Target, port: number, note: (text: string) => void): Promise<Route & { created: boolean }>
   detach(item: Target, port: number, note: (text: string) => void): Promise<{ detached: boolean; restored?: boolean }>
   routed(item: Target): Promise<Route | undefined>
+  /** Undo a replace that failed midway; a no-op when nothing is half-replaced. */
+  repair(item: Target): Promise<void>
   url(item: Target): Promise<string>
 }
 

@@ -126,7 +126,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
       ? ["telepresence", "replace", item.workload, "--namespace", ns, "--container", item.container || "", "--mount", "false"]
       : ["telepresence", "intercept", item.workload, "--namespace", ns, "--port", `${port}:http`, ...(item.service ? ["--service", item.service] : []), "--mount", "false", ...(item.agent === "node" ? ["--node-agent"] : [])]
     if (item.mode === "replace" && !item.container) throw new Error(`${item.id}: replace requires a container`)
-    const run = command([...args, "--format", "json", "--progress", "quiet"], root, item.mode === "replace" ? 200_000 : 20_000)
+    const run = command([...args, "--format", "json", "--progress", "quiet"], root, item.mode === "replace" ? 330_000 : 20_000)
     if (item.mode === "replace") {
       const blocked = await attempt(() => budget(item))
       await watch(item, run, note, `Stopping ${item.workload}/${item.container}${blocked.ok && blocked.value ? "; its disruption budget allows no eviction, so Telepresence restarts the workload after about 30s" : ""}`)
@@ -152,6 +152,17 @@ export function kubernetes(opts: Kubernetes): Adapter {
     return list.some((pod) => object(pod.status) && pod.status.phase === "Running" && Array.isArray(pod.status.containerStatuses) &&
       pod.status.containerStatuses.filter(object).some((row) => row.name === item.container && row.ready === true)) &&
       !list.some((pod) => object(pod.spec) && Array.isArray(pod.spec.containers) && !pod.spec.containers.filter(object).some((row) => row.name === item.container) && !(object(pod.metadata) && pod.metadata.deletionTimestamp))
+  }
+
+  // A replace that fails midway leaves a pod with only the traffic agent: deleting it lets the Deployment recreate the original.
+  async function repair(item: Target) {
+    if (item.mode !== "replace") return
+    for (const pod of await pods(item)) {
+      const meta = object(pod.metadata) ? pod.metadata : undefined
+      const notes = meta && object(meta.annotations) ? meta.annotations : {}
+      if (meta && typeof meta.name === "string" && Object.keys(notes).some((key) => key.endsWith("replaced-container")))
+        await command(["kubectl", "-n", ns, "delete", "pod", meta.name, "--wait=false"], root, 20_000)
+    }
   }
 
   async function detach(item: Target, port: number, note: (text: string) => void) {
@@ -338,7 +349,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
     }
   }
 
-  return { type: "kubernetes", connect, doctor, env, attach, detach, routed, url }
+  return { type: "kubernetes", connect, doctor, env, attach, detach, routed, repair, url }
 }
 
 function duration(value: string) {
