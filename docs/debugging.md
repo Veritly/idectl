@@ -17,6 +17,8 @@ If a startup breakpoint pauses a service, the wait reports `paused` and the resu
 Only one managed session can own the frontend at a time. Existing debug processes and routes are reused and left running.
 `debug down NAME`, then `wait session NAME --until stopped --json`, cleans up: `cleanup` goes `requested`, `running`, `complete`. Cleanup closes the owned browser, stops owned debug sessions, removes owned routes and persists IDE breakpoint settings. Each launch and stop reports its creation timestamp so retries can be identified.
 
+A service's `ide` (`idectl.json`) chooses its debugger: RustRover for Rust binaries, WebStorm for Node and Bun run configurations. `--service NAME` selects that IDE and project; everything else on this page applies to both.
+
 Routing modes, from each service's `mode`:
 
 - `intercept`: the environment keeps its own copy running while its traffic goes to the IDE process. Use `route NAME` / `unroute NAME` to do this manually once a local service is ready.

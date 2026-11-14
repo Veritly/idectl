@@ -30,7 +30,7 @@ function read(folder: string) {
 export function context(name: string) {
   if (name === "frontend") {
     const active = owner()
-    throw new Error(`--service selects a Rust backend; use ${active ? active.context.join(" ") : `--ide webstorm --project ${front.project} --session ID`} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
+    throw new Error(`--service selects a backend service; use ${active ? active.context.join(" ") : `--ide webstorm --project ${front.project} --session ID`} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
   }
   const key = known(name) ? find(name).id : undefined
   if (!key) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
@@ -73,7 +73,7 @@ export async function blocked(id: string) {
   if (!active || !active.context.includes("--session") || active.context.at(-1) !== id) return
   const found = context(active.service)
   if (!found.state || found.state.phase !== "ready" || typeof found.state.pid !== "number" || typeof found.state.token !== "string" || stamp(found.state.pid) !== found.state.token) return
-  const debug = debuggerClient({ chosen: "rustrover", project: found.project })
+  const debug = debuggerClient({ chosen: find(active.service).ide, project: found.project })
   const ide = await debug.endpoint()
   const paused = rows(await debug.tool(ide, "list_debug_sessions"), "sessions")
     .filter((row) => (row.runConfigurationName === service(active.service) || row.name === service(active.service)) && row.state === "paused")
@@ -230,7 +230,7 @@ async function worker(name: string, cleanup: boolean) {
   const rust = scope(root, item.project).project
   const debug = debuggerClient({ chosen: "webstorm", project: web })
   const webarg = ["--ide", "webstorm", "--project", web]
-  const rustarg = ["--ide", "rustrover", "--project", rust]
+  const rustarg = ["--ide", item.ide, "--project", rust]
   async function sessions() {
     const ide = await debug.endpoint()
     return rows(await debug.tool(ide, "list_debug_sessions", { project_path: web }), "sessions")
@@ -388,13 +388,13 @@ async function worker(name: string, cleanup: boolean) {
     }
     if (!opened.ok) throw new Error(`WebStorm is ${String(opened.phase)}: ${String(opened.reason || opened.message || "inspect open status")}`)
     update("opening backend")
-    opened = await call(["open", item.project, "--ide", "rustrover"])
+    opened = await call(["open", item.project, "--ide", item.ide])
     while (opened.phase === "plugin_installing") {
       if (stopped()) { await clean(); return }
       await Bun.sleep(500)
-      opened = await call(["open", item.project, "--ide", "rustrover"])
+      opened = await call(["open", item.project, "--ide", item.ide])
     }
-    if (!opened.ok) throw new Error(`RustRover is ${String(opened.phase)}: ${String(opened.reason || opened.message || "inspect open status")}`)
+    if (!opened.ok) throw new Error(`${item.ide} is ${String(opened.phase)}: ${String(opened.reason || opened.message || "inspect open status")}`)
     if (stopped()) { await clean(); return }
     update("connecting environment")
     await preflight()
@@ -408,7 +408,7 @@ async function worker(name: string, cleanup: boolean) {
     if (existing) state.backend = { pid: existing.pid, owned: false }
     else {
       update("starting backend", { backend: { owned: true, phase: "starting" } })
-      const launch = enqueue(service(name), rust, true)
+      const launch = enqueue(service(name), rust, item.ide, true)
       state.backend = { pid: launch.pid, owned: true }
     }
     update("starting services")

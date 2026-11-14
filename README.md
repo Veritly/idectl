@@ -17,7 +17,7 @@ Command-line control of JetBrains IDE debugging for agents and scripts: open pro
 - `hooks.runtime` (optional): reads `{service, configuration, port, dir, paths, env}` as JSON on stdin and prints the final environment object. Progress goes to stderr; it may write its phase to `$IDECTL_PHASE`.
 - `hooks.login` (optional): reads `IDECTL_URL` and prints `{"cookies":[{"name","value"}]}` for the managed browser.
 - `adapter`: the environment the local processes join.
-- `frontend` and `services`: run configuration name, IDE project path, health path, port variable, workload and routing `mode`.
+- `frontend` and `services`: run configuration name, IDE project path, health path, port variable, workload and routing `mode`. Each service also names its `ide`: `rustrover` runs a built Rust `binary`; `webstorm` runs a Node or Bun run configuration (no `binary`), whose process idectl recognises by its working directory inside the project.
 
 ## Adapters
 

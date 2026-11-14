@@ -15,7 +15,7 @@ const example = path.resolve(import.meta.dir, "../../example")
 
 test("replace-mode services launch only inside a managed session and request repair otherwise", async () => {
   const before = context("worker").state
-  expect(() => enqueue("Example Worker", "/unused")).toThrow(Repair)
+  expect(() => enqueue("Example Worker", "/unused", "rustrover")).toThrow(Repair)
   expect(() => recover("Example Worker", "/unused")).toThrow(Repair)
   expect(context("worker").state).toEqual(before)
   const proc = Bun.spawn(["bun", cli, "route", "worker", "--json"], { cwd: example, stdout: "pipe", stderr: "pipe" })
@@ -36,7 +36,7 @@ test("project config is validated and owns every service definition", () => {
     cli: "idectl",
     env: ".env", state: ".state", adapter: { type: "none" },
     frontend: { ...target, browser: "Browser", url: "APP_URL", mounted: "true" },
-    services: { api: { ...target, configuration: "Api", binary: "target/api", container: "api" } },
+    services: { api: { ...target, configuration: "Api", ide: "rustrover", binary: "target/api", container: "api" } },
   }
   try {
     write(base)
@@ -46,6 +46,10 @@ test("project config is validated and owns every service definition", () => {
     expect(value.env).toBe(path.join(dir, ".env"))
     write({ ...base, services: { api: { ...base.services.api, mode: "swap" } } })
     expect(() => load(dir)).toThrow("services.api.mode must be intercept or replace")
+    write({ ...base, services: { api: { ...base.services.api, ide: "webstorm" } } })
+    expect(() => load(dir)).toThrow("services.api.binary applies to rustrover services only")
+    write({ ...base, services: { api: { ...base.services.api, ide: "webstorm", binary: undefined } } })
+    expect(load(dir).services.api).toMatchObject({ ide: "webstorm", binary: undefined })
     write({ ...base, services: { frontend: base.services.api } })
     expect(() => load(dir)).toThrow("frontend is reserved")
     write({ ...base, adapter: { type: "kubernetes", namespace: "dev" } })

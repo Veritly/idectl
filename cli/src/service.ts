@@ -50,9 +50,18 @@ export function kill(pid: number) {
 
 async function owned(item: Service) {
   const listener = (await sockets()).find((row) => row.port === port(item))
-  const target = path.join(cfg.root, item.binary)
-  if (!listener?.pid || !fs.existsSync(target) || !fs.existsSync(`/proc/${listener.pid}/exe`)) return false
-  return fs.realpathSync(`/proc/${listener.pid}/exe`) === fs.realpathSync(target)
+  if (!listener?.pid) return false
+  if (item.binary) {
+    const target = path.join(cfg.root, item.binary)
+    if (!fs.existsSync(target) || !fs.existsSync(`/proc/${listener.pid}/exe`)) return false
+    return fs.realpathSync(`/proc/${listener.pid}/exe`) === fs.realpathSync(target)
+  }
+  // A WebStorm service has no binary of its own: its process runs from the service's project directory.
+  const cwd = `/proc/${listener.pid}/cwd`
+  if (!fs.existsSync(cwd)) return false
+  const dir = fs.realpathSync(path.join(cfg.root, item.project))
+  const at = fs.realpathSync(cwd)
+  return at === dir || at.startsWith(`${dir}${path.sep}`)
 }
 
 export async function local(item: Service) {
@@ -69,8 +78,8 @@ export async function detach(item: Target, note: (text: string) => void = () => 
 export async function attach(item: Service | Frontend, note: (text: string) => void = () => {}) {
   await preflight()
   await adapter.connect()
-  if (item.mode === "intercept" && "binary" in item && !(await owned(item)))
-    throw new Error(`The local ${item.id} binary is not listening on port ${port(item)}; run debug start ${item.id}, then wait ${item.id} --service ${item.id}`)
+  if (item.mode === "intercept" && "ide" in item && !(await owned(item)))
+    throw new Error(`The local ${item.id} process is not listening on port ${port(item)}; run debug start ${item.id}, then wait ${item.id} --service ${item.id}`)
   if (item.mode === "intercept" && !(await health(item)).ok)
     throw new Error(`Local ${item.id} is not ready on port ${port(item)}; wait for it before routing`)
   return { ok: true, ...(await adapter.attach(item, port(item), note)) }

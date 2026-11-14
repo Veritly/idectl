@@ -15,7 +15,9 @@ export type Target = {
   agent: Agent
   mode: Mode
 }
-export type Service = Target & { binary: string; container: string }
+export type Ide = "rustrover" | "webstorm"
+/** Rust services run a built binary in RustRover; Node and Bun services run a WebStorm configuration and have no binary. */
+export type Service = Target & { ide: Ide; binary?: string; container: string }
 export type Frontend = Target & { browser: string; url: string; mounted: string }
 export type Kubernetes = { type: "kubernetes"; namespace: string; skip: string[]; manager?: { namespace: string; release: string } }
 export type Adapter = Kubernetes | { type: "none" }
@@ -124,9 +126,13 @@ export function load(dir: string): Config {
     },
     services: Object.fromEntries(Object.entries(services).map(([id, value]) => {
       const item = record(value, `services.${id}`)
+      const ide = text(item.ide, `services.${id}.ide`)
+      if (ide !== "rustrover" && ide !== "webstorm") throw new Error(`${file}: services.${id}.ide must be rustrover or webstorm`)
+      if (ide === "webstorm" && item.binary !== undefined) throw new Error(`${file}: services.${id}.binary applies to rustrover services only`)
       return [id, {
         ...target(id, item, `services.${id}`),
-        binary: text(item.binary, `services.${id}.binary`),
+        ide,
+        binary: ide === "rustrover" ? text(item.binary, `services.${id}.binary`) : undefined,
         container: text(item.container, `services.${id}.container`),
       }]
     })),

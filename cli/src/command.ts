@@ -2,7 +2,7 @@ import path from "node:path"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
-import { cfg, service as find } from "./config"
+import { cfg, known, service as find } from "./config"
 
 const bin = cfg.cli
 import { adapter } from "./adapter"
@@ -42,7 +42,8 @@ const override = option("--port")
 const explicitSession = option("--session")
 const selected = option("--project")
 const scope = option("--service")
-if (scope && (explicit && explicit !== "rustrover" || override)) throw new Error("--service selects RustRover; do not combine it with a different IDE or port")
+const backend = scope && known(scope) ? find(scope).ide : undefined
+if (scope && backend && (explicit && explicit !== backend || override)) throw new Error(`--service selects ${backend}; do not combine it with a different IDE or port`)
 const context = scope ? sessionContext(scope) : (!explicit || explicit === "rustrover") && args[0] === "breakpoint" && args[1] === "set" && args[2] ? sessionMatching(args[2]) : undefined
 const project = selected ? (path.resolve(selected).startsWith(`${root}${path.sep}`) || path.resolve(selected) === root ? projectScope(root, selected).project : path.resolve(selected)) : context?.project
 const job = scope && context && (!selected || project === context.project)
@@ -50,7 +51,7 @@ const job = scope && context && (!selected || project === context.project)
   : undefined
 const session = explicitSession || (typeof job?.session === "string" || typeof job?.session === "number" ? String(job.session) : undefined)
 const web = args[0] === "debug" && ["start", "cancel"].includes(args[1] || "") && args[2] === "frontend"
-const chosen = explicit || (scope || args[0] === "breakpoint" && args[1] === "set" && path.extname(args[2] || "") === ".rs" ? "rustrover" : web ? "webstorm" : undefined)
+const chosen = explicit || (scope ? backend : args[0] === "breakpoint" && args[1] === "set" && path.extname(args[2] || "") === ".rs" ? "rustrover" : web ? "webstorm" : undefined)
 const timeout = option("--timeout")
 const until = option("--until")
 const frame = option("--frame")
@@ -300,9 +301,9 @@ export async function main() {
       return 0
     }
     const rust = action && ["start", "cancel", "recover"].includes(action) && managed(args.join(" ").trim())
-    const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === "rustrover") : await endpoint()
-    if (!ide) throw new Error("RustRover is not running; open the service's source first")
-    if (ide.id === "rustrover") {
+    const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === find(args.join(" ").trim()).ide) : await endpoint()
+    if (!ide) throw new Error("The service's IDE is not running; open the service's source first")
+    if (ide.id === "rustrover" || (rust && ["start", "jobs", "cancel", "recover"].includes(action))) {
       if (!action) throw new Error("debug requires a command")
       if (action === "run") throw new Error("Use debug start for Rust so runtime setup is applied")
       if (action === "builds") return dispatch(ide, [action, ...args], { project, timeout, full, session, frame: index() })
@@ -312,7 +313,7 @@ export async function main() {
         if (!target) throw new Error("No IDE project selected; open a project or pass --project")
         if (action === "jobs") { print({ jobs: scope ? jobs(target).filter((item) => item.name === service(scope)) : jobs(target) }); return 0 }
         if (!name) throw new Error(`debug ${action} requires a configuration name`)
-        if (action === "start") { print(enqueue(name, target)); return 0 }
+        if (action === "start") { print(enqueue(name, target, ide.id)); return 0 }
         if (action === "recover") { print(recover(name, target)); return 0 }
         print(cancel(name, target))
         return 0

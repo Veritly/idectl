@@ -19,6 +19,7 @@
     "api": {
       "project": "api",
       "configuration": "Example Api",
+      "ide": "rustrover",
       "binary": "api/target/debug/api",
       "health": "/ready",
       "port": "API_PORT",
@@ -30,6 +31,7 @@
     "worker": {
       "project": "worker",
       "configuration": "Example Worker",
+      "ide": "rustrover",
       "binary": "worker/target/debug/worker",
       "health": "/ready",
       "port": "WORKER_PORT",
