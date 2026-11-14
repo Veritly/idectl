@@ -303,7 +303,7 @@ export async function main() {
     const rust = action && ["start", "cancel", "recover"].includes(action) && managed(args.join(" ").trim())
     const ide = !chosen && !override && rust ? (await endpoints()).find((item) => item.id === find(args.join(" ").trim()).ide) : await endpoint()
     if (!ide) throw new Error("The service's IDE is not running; open the service's source first")
-    if (ide.id === "rustrover" || (rust && ["start", "jobs", "cancel", "recover"].includes(action))) {
+    if (ide.id === "rustrover") {
       if (!action) throw new Error("debug requires a command")
       if (action === "run") throw new Error("Use debug start for Rust so runtime setup is applied")
       if (action === "builds") return dispatch(ide, [action, ...args], { project, timeout, full, session, frame: index() })
@@ -313,7 +313,7 @@ export async function main() {
         if (!target) throw new Error("No IDE project selected; open a project or pass --project")
         if (action === "jobs") { print({ jobs: scope ? jobs(target).filter((item) => item.name === service(scope)) : jobs(target) }); return 0 }
         if (!name) throw new Error(`debug ${action} requires a configuration name`)
-        if (action === "start") { print(enqueue(name, target, ide.id)); return 0 }
+        if (action === "start") { print(enqueue(name, target)); return 0 }
         if (action === "recover") { print(recover(name, target)); return 0 }
         print(cancel(name, target))
         return 0

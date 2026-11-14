@@ -87,7 +87,7 @@ export function jobs(project: string) {
   })
 }
 
-export function enqueue(name: string, project: string, ide: string, session = false) {
+export function enqueue(name: string, project: string, session = false) {
   launchable(name, session)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
   const folder = dir(name, project)
@@ -98,7 +98,7 @@ export function enqueue(name: string, project: string, ide: string, session = fa
     fs.renameSync(folder, `${folder}-${Date.now()}`)
   }
   fs.mkdirSync(folder, { mode: 0o700 })
-  save(folder, { root, name, project, ide, phase: "queued" })
+  save(folder, { root, name, project, phase: "queued" })
   const fd = fs.openSync(path.join(folder, "worker.log"), "a", 0o600)
   const proc = Bun.spawn(["setsid", process.execPath, import.meta.path, "worker", folder], {
     cwd: root, stdin: "ignore", stdout: fd, stderr: fd,
@@ -162,8 +162,7 @@ async function worker(folder: string, recover: boolean) {
     Object.assign(state, { error: undefined }, fields, { phase })
     save(folder, state)
   }
-  if (initial.ide !== "rustrover" && initial.ide !== "webstorm") throw new Error("Invalid launch record")
-  const args = ["--ide", initial.ide, "--project", project]
+  const args = ["--ide", "rustrover", "--project", project]
   const stopped = () => fs.existsSync(path.join(folder, "cancel"))
   const clean = () => {
     for (const item of fs.readdirSync(folder).filter((item) => /^secret-[A-Za-z0-9]+$/.test(item))) {

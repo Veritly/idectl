@@ -4,7 +4,7 @@ import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
 import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service, launchable } from "./job"
-import { vars, preflight, attach as link, detach as unlink } from "./service"
+import { vars, preflight, local, attach as link, detach as unlink } from "./service"
 import { adapter } from "./adapter"
 import { cfg, known, service as find, shm } from "./config"
 import { login } from "./auth"
@@ -226,17 +226,19 @@ async function worker(name: string, cleanup: boolean) {
   const update = (phase: string, extra: Record<string, unknown> = {}) => { Object.assign(state, extra, { phase }); save(folder, state) }
   const stopped = () => fs.existsSync(path.join(folder, "stop"))
   const item = find(name)
+  const node = item.ide === "webstorm"
   const web = scope(root, front.project).project
   const rust = scope(root, item.project).project
   const debug = debuggerClient({ chosen: "webstorm", project: web })
   const webarg = ["--ide", "webstorm", "--project", web]
   const rustarg = ["--ide", item.ide, "--project", rust]
-  async function sessions() {
+  async function sessions(project = web) {
     const ide = await debug.endpoint()
-    return rows(await debug.tool(ide, "list_debug_sessions", { project_path: web }), "sessions")
+    return rows(await debug.tool(ide, "list_debug_sessions", { project_path: project }), "sessions")
   }
-  async function startWeb(cfg: string, key: string) {
-    const all = await sessions()
+  async function startWeb(cfg: string, key: string, project = web) {
+    const args = ["--ide", "webstorm", "--project", project]
+    const all = await sessions(project)
     const before = all.filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)))
     if (before.length > 1) throw new Error(`Multiple ${cfg} sessions are active`)
     if (before.length === 1) {
@@ -246,8 +248,8 @@ async function worker(name: string, cleanup: boolean) {
     }
     const prior = all.map((item) => field(item, ["id", "sessionId"])).filter(Boolean)
     update(`starting ${key}`, { [key]: { owned: true, phase: "starting", prior } })
-    const result = await call(["debug", "start", cfg, ...webarg]).catch(async (err: unknown) => {
-      const found = (await sessions()).filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)) && !prior.includes(field(item, ["id", "sessionId"])))
+    const result = await call(["debug", "start", cfg, ...args]).catch(async (err: unknown) => {
+      const found = (await sessions(project)).filter((item) => item.runConfigurationName === cfg && ["running", "paused"].includes(String(item.state)) && !prior.includes(field(item, ["id", "sessionId"])))
       if (found.length === 1) {
         const id = field(found[0], ["id", "sessionId"])
         if (id) { state[key] = { id, owned: true }; save(folder, state) }
@@ -260,17 +262,16 @@ async function worker(name: string, cleanup: boolean) {
     state[key] = { id, owned: true, ...(key === "browser" && object(result.browser) ? { endpoint: result.browser.endpoint, pid: result.browser.pid, token: result.browser.token } : {}) }
     save(folder, state)
   }
-  async function stopWeb(key: string) {
+  async function stopWeb(key: string, project = web, cfg = key === "browser" ? front.browser : front.configuration) {
     const item = state[key]
     if (!object(item) || item.owned !== true) return
     if (typeof item.id !== "string") {
-      const cfg = key === "browser" ? front.browser : front.configuration
-      const active = (await sessions()).filter((row) => row.runConfigurationName === cfg && ["running", "paused"].includes(String(row.state)))
+      const active = (await sessions(project)).filter((row) => row.runConfigurationName === cfg && ["running", "paused"].includes(String(row.state)))
       const prior = Array.isArray(item.prior) ? item.prior : undefined
       const created = prior ? active.filter((row) => !prior.includes(field(row, ["id", "sessionId"]))) : []
       if (created.length === 1) {
         const id = field(created[0], ["id", "sessionId"])
-        if (id) { state[key] = { id, owned: true }; save(folder, state); return stopWeb(key) }
+        if (id) { state[key] = { id, owned: true }; save(folder, state); return stopWeb(key, project, cfg) }
       }
       if (active.length)
         throw new Error(`Cannot identify the ${key} session; inspect WebStorm`)
@@ -283,17 +284,17 @@ async function worker(name: string, cleanup: boolean) {
         throw new Error("Owned browser has no process identity; inspect WebStorm browser sessions before cleanup")
       await closeBrowser(item.endpoint, item.pid, item.token)
     }
-    const found = (await sessions()).find((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state)))
+    const found = (await sessions(project)).find((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state)))
     if (found) {
       const ide = await debug.endpoint()
-      await debug.tool(ide, "stop_debug_session", { project_path: web, session_id: item.id }, 5000)
+      await debug.tool(ide, "stop_debug_session", { project_path: project, session_id: item.id }, 5000)
       const until = Date.now() + 5000
       while (Date.now() < until) {
-        const active = (await sessions()).some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state)))
+        const active = (await sessions(project)).some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state)))
         if (!active) break
         await Bun.sleep(250)
       }
-      if ((await sessions()).some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state))))
+      if ((await sessions(project)).some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state))))
         throw new Error(`${key} is still stopping; retry debug down`)
     }
     state[key] = undefined
@@ -344,7 +345,8 @@ async function worker(name: string, cleanup: boolean) {
       save(folder, state)
     })
     await attempt(() => stopWeb("browser"))
-    await attempt(async () => {
+    if (node) await attempt(() => stopWeb("backend", rust, item.configuration))
+    else await attempt(async () => {
       if (!object(state.backend) || state.backend.owned !== true) return
       const job = jobs(rust).find((row) => row.name === service(name))
       if (job && job.pid !== state.backend.pid) throw new Error("The backend launch changed; it was preserved")
@@ -400,23 +402,35 @@ async function worker(name: string, cleanup: boolean) {
     await preflight()
     await adapter.connect()
     await startWeb(front.configuration, "frontend")
-    const existing = jobs(rust).find((row) => row.name === service(name) && !["stopped", "failed"].includes(String(row.phase)))
+    const existing = node ? undefined : jobs(rust).find((row) => row.name === service(name) && !["stopped", "failed"].includes(String(row.phase)))
     if (item.mode === "replace" && !existing) {
       if (stopped()) { await clean(); return }
       await attach("replacing cluster workload")
     }
-    if (existing) state.backend = { pid: existing.pid, owned: false }
+    if (node) {
+      update("starting backend", { backend: { owned: true, phase: "starting" } })
+      await startWeb(item.configuration, "backend", rust)
+    } else if (existing) state.backend = { pid: existing.pid, owned: false }
     else {
       update("starting backend", { backend: { owned: true, phase: "starting" } })
-      const launch = enqueue(service(name), rust, item.ide, true)
+      const launch = enqueue(service(name), rust, true)
       state.backend = { pid: launch.pid, owned: true }
+    }
+    // A WebStorm service is ready when its debug session runs and its own process answers the health path.
+    const backend = async () => {
+      if (!node) return call(["wait", name, ...rustarg, "--timeout", "3"])
+      const live = (await sessions(rust)).find((row) => object(state.backend) && field(row, ["id", "sessionId"]) === state.backend.id)
+      if (!live || !["running", "paused"].includes(String(live.state))) return { ok: false, phase: "stopped" }
+      if (live.state === "paused") return { ok: false, phase: "paused" }
+      const health = await local(item)
+      return { ok: health.ok, phase: health.ok ? "ready" : "starting" }
     }
     update("starting services")
     while (true) {
       if (stopped()) { await clean(); return }
-      const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), call(["wait", name, ...rustarg, "--timeout", "3"])])
+      const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), backend()])
       if (front.phase === "missing") throw new Error(`Frontend debug session disappeared during startup; inspect ${path.join(cfg.state, "frontend.log")} for its retained output`)
-      if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : "inspect debug jobs"}`)
+      if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : node ? "inspect its WebStorm session and the process output" : "inspect debug jobs"}`)
       if (front.ok && back.ok) break
       const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined
       update(paused ? "paused" : "starting services", {
@@ -454,6 +468,11 @@ async function worker(name: string, cleanup: boolean) {
         const item = state[key]
         if (!object(item) || typeof item.id !== "string" || !active.some((row) => field(row, ["id", "sessionId"]) === item.id && ["running", "paused"].includes(String(row.state))))
           throw new Error(`${key} debug session stopped`)
+      }
+      if (node) {
+        const id = object(state.backend) ? state.backend.id : undefined
+        if (!(await sessions(rust)).some((row) => field(row, ["id", "sessionId"]) === id && ["running", "paused"].includes(String(row.state)))) throw new Error("Backend debug session stopped")
+        continue
       }
       const job = jobs(rust).find((row) => row.name === service(name))
       if (!job || ["stopped", "failed", "unknown"].includes(String(job.phase))) throw new Error(`Backend debug session ${String(job?.phase || "disappeared")}`)

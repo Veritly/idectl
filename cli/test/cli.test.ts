@@ -15,7 +15,7 @@ const example = path.resolve(import.meta.dir, "../../example")
 
 test("replace-mode services launch only inside a managed session and request repair otherwise", async () => {
   const before = context("worker").state
-  expect(() => enqueue("Example Worker", "/unused", "rustrover")).toThrow(Repair)
+  expect(() => enqueue("Example Worker", "/unused")).toThrow(Repair)
   expect(() => recover("Example Worker", "/unused")).toThrow(Repair)
   expect(context("worker").state).toEqual(before)
   const proc = Bun.spawn(["bun", cli, "route", "worker", "--json"], { cwd: example, stdout: "pipe", stderr: "pipe" })
