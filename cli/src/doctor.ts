@@ -13,6 +13,8 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   const project = opts.project
   const endpoints = debug.endpoints
   const configs = debug.configs
+  // A leftover port file makes every spawned process pause until a debugger connects.
+  const attached = Object.entries(cfg.attach).filter(([, item]) => fs.existsSync(path.join(root, item.file))).map(([id, item]) => ({ id, port: item.port, hint: `${cfg.cli} debug detach ${id} when finished` }))
   const targets = [cfg.frontend, ...Object.values(cfg.services)]
   const [active, environment, guard] = await Promise.all([
     endpoints(),
@@ -30,6 +32,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
       choices: (selected ? [selected] : active).flatMap((ide) => projects(ide).map((project) => ({
         ide: ide.id, project, command: `${cfg.cli} doctor --ide ${ide.id} --project ${quote(project)}`,
       }))),
+      ...(attached.length ? { attached } : {}),
       hint: "Run the matching command from choices, then continue your task; selection_required is not an IDE or MCP health failure. For a Rust service, doctor --service NAME selects its project explicitly.",
     }
   }
@@ -81,6 +84,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
     env: cfg.env,
     adapter: { type: adapter.type, ...environment.details },
     preflight: guard && !guard.ok ? guard.error : undefined,
+    ...(attached.length ? { attached } : {}),
     selection: !selected && active.length > 1 ? `Multiple IDEs are active; use --ide to check ${active.map((item) => item.id).join(" or ")}` : undefined,
     checks,
     project: target,

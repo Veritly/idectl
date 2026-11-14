@@ -38,7 +38,13 @@ export async function on(id: string) {
   }
   await call(project, "idectl_reload_project", {})
   if (!(await sessions(project, item.configuration)).length) await run("debug", "start", item.configuration, "--ide", "webstorm", "--project", project)
-  return { ok: true, attach: id, phase: "attached", port: item.port, project }
+  // Breakpoints persist in the IDE between sessions; a forgotten one pauses the first request that reaches it and the app times out.
+  const left = rows(await run("breakpoint", "list", "--ide", "webstorm", "--project", project), "breakpoints").filter((row) => row.type === "line")
+  const lines = left.map((row) => ({ id: row.id, file: row.file, line: row.line }))
+  return {
+    ok: true, attach: id, phase: "attached", port: item.port, project,
+    ...(lines.length ? { breakpoints: lines, warning: `${lines.length} line breakpoint(s) are already set in this project and will pause the first request that reaches them; remove stale ones with ${name} breakpoint remove ID --ide webstorm --project ${project}` } : {}),
+  }
 }
 
 /** Removes the port file first so no new process pauses, then stops the session the way the IDE's Stop button does; the debugger API's stop would be answered by a reconnect. */
