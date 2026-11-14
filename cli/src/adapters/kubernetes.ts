@@ -159,11 +159,13 @@ export function kubernetes(opts: Kubernetes): Adapter {
       throw new Error(`${item.id} is attached to a different target; existing attachment preserved`)
     await command(["telepresence", "detach", item.workload, "--namespace", ns, "--format", "json", "--progress", "quiet"], root, 10_000)
     if (item.mode !== "replace") return { detached: true }
+    const blocked = await attempt(() => budget(item))
+    const label = `Restoring ${item.workload}/${item.container}${blocked.ok && blocked.value ? "; its disruption budget allows no eviction, so Telepresence restarts the workload after about 30s" : ""}`
     const until = Date.now() + 120_000
     while (Date.now() < until) {
       if (await restored(item)) return { detached: true, restored: true }
       const text = await attempt(() => summary(item))
-      if (text.ok) note(`Restoring ${item.workload}/${item.container}; ${text.value}`)
+      if (text.ok) note(`${label}; ${text.value}`)
       await Bun.sleep(2000)
     }
     throw new Error(`${item.workload} was detached but its ${item.container} container is not running again yet; check kubectl -n ${ns} get pods`)

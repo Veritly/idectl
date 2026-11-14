@@ -91,6 +91,7 @@ ${bin} debug request SERVICE /PATH [--timeout SECONDS]
 ${bin} wait session SERVICE [--until ready|stopped] [--timeout SECONDS] [--json]
 ${bin} wait request ID [--timeout SECONDS] [--json]
 ${bin} debug resume|pause|step-over|step-into|step-out|eval|set|start|run|stop [...]
+${bin} debug text POINTER LENGTH
 ${bin} debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
 ${bin} debug commands [TOOL] | TOOL [JSON|-]
 ${bin} mcp tools | call TOOL [JSON|-]
@@ -488,6 +489,23 @@ export async function main() {
       const frame = Number(args.shift())
       if (!Number.isInteger(frame) || frame < 0) throw new Error("debug frame requires a non-negative index")
       print(await tool(ide, "select_stack_frame", { frame_index: frame }))
+    } else if (action === "text") {
+      const pointer = args.shift()
+      const length = args.shift()
+      if (!pointer || !length || args.length) throw new Error("debug text requires POINTER LENGTH, for example request.head.uri.path_and_query.data.bytes.ptr request.head.uri.path_and_query.data.bytes.len")
+      const value = async (expression: string) => {
+        const result = await tool(ide, "evaluate_expression", { expression, frame_index: index() })
+        const row = object(result) && object(result.result) ? result.result : undefined
+        if (!row || typeof row.value !== "string" || row.error) throw new Error(`Cannot evaluate ${expression}: ${row && typeof row.error === "string" ? row.error.trim() : "no value"}`)
+        return row.value.trim()
+      }
+      const size = Number(/^\d+$/.test(length) ? length : await value(length))
+      if (!Number.isInteger(size) || size < 0) throw new Error(`${length} is not a byte length`)
+      const count = Math.min(size, 256)
+      const bytes = []
+      for (const item of Array.from({ length: count }, (_, i) => i)) bytes.push(Number(await value(`(*(${pointer} as *const [u8; ${count}]))[${item}]`)))
+      if (!bytes.every((item) => Number.isInteger(item) && item >= 0 && item < 256)) throw new Error(`${pointer} does not point to bytes`)
+      print({ text: new TextDecoder().decode(new Uint8Array(bytes)), length: size, truncated: size > count })
     } else if (action === "eval") {
       const expression = args.join(" ").trim()
       if (!expression) throw new Error("debug eval requires an expression")
