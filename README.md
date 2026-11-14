@@ -23,7 +23,7 @@ Command-line control of JetBrains IDE debugging for agents and scripts: open pro
 - `none`: local processes only. Routing is a no-op.
 - `kubernetes`: resolves a workload container's env, Secrets, ConfigMaps and the checkout's hostPath mount from the cluster, and routes with Telepresence:
   - `mode: "intercept"` sends the workload's HTTP traffic to the local process while cluster pods keep running.
-  - `mode: "replace"` stops the workload's container (`telepresence replace`) before the local process starts and restores it after the local process stops. Use it for queue workers. Telepresence `timeouts.intercept` must be at least 2m because the workload restarts; `idectl doctor` checks this.
+  - `mode: "replace"` stops the workload's container (`telepresence replace`) before the local process starts and restores it after the local process stops. Use it for queue workers. Telepresence `timeouts.intercept` (client config) and the traffic manager's `timeouts.agentArrival` (Helm value) must be at least 2m because the workload restarts and may wait for its disruption budget; `idectl doctor` checks both.
 
 Replace-mode services only start through `idectl debug up NAME`, which owns the stop-and-restore.
 

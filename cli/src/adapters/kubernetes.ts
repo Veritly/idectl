@@ -245,7 +245,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
       attempt(status),
       attempt(async () => parse(await command(["kubectl", "get", "deployments", "-n", ns, "-o", "json"], root, 5000))),
       opts.manager && ctx.ok
-        ? attempt(async () => parse(await command(["helm", "--kube-context", ctx.value, "--namespace", opts.manager!.namespace, "get", "values", opts.manager!.release, "--output", "json"], root, 5000)))
+        ? attempt(async () => parse(await command(["helm", "--kube-context", ctx.value, "--namespace", opts.manager!.namespace, "get", "values", opts.manager!.release, "--all", "--output", "json"], root, 5000)))
         : Promise.resolve(undefined),
     ])
     const user = daemon.ok && object(daemon.value) && object(daemon.value.user_daemon) ? daemon.value.user_daemon : undefined
@@ -261,6 +261,9 @@ export function kubernetes(opts: Kubernetes): Adapter {
     })
     const replace = targets.some((item) => item.mode === "replace")
     const seconds = timeout.ok && timeout.value ? duration(timeout.value) : 30
+    const arrival = manager?.ok && object(manager.value) && object(manager.value.timeouts) && typeof manager.value.timeouts.agentArrival === "string"
+      ? duration(manager.value.timeouts.agentArrival)
+      : undefined
     return {
       checks: {
         kubectl: Boolean(Bun.which("kubectl")),
@@ -270,7 +273,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
         tunnel: Boolean(user && ctx.ok && user.status === "Connected" && user.kubernetes_context === ctx.value && mapped?.includes(ns)),
         workloads: targets.every((item) => names.includes(item.workload)),
         ...(targets.some((item) => item.agent === "node") ? { agent: node === true } : {}),
-        ...(replace ? { timeout: seconds >= 120 } : {}),
+        ...(replace ? { timeout: seconds >= 120, ...(opts.manager ? { arrival: (arrival || 0) >= 120 } : {}) } : {}),
       },
       details: {
         namespace: ns,
@@ -279,6 +282,9 @@ export function kubernetes(opts: Kubernetes): Adapter {
         missing: targets.filter((item) => !names.includes(item.workload)).map((item) => item.workload),
         timeout: replace && seconds < 120
           ? `Telepresence timeouts.intercept is ${seconds}s; replace restarts the workload, so set timeouts.intercept to at least 2m in ~/.config/telepresence/config.yml`
+          : undefined,
+        arrival: replace && opts.manager && (arrival || 0) < 120
+          ? `Traffic manager timeouts.agentArrival is ${arrival === undefined ? "unknown" : `${arrival}s`}; replace waits for the workload's disruption budget, so run telepresence helm upgrade --reuse-values --set timeouts.agentArrival=3m`
           : undefined,
       },
     }
