@@ -71,6 +71,20 @@ test("startup selection errors are JSON and explain frontend debugger selection"
   }
 })
 
+test("optional JSON never waits on an open stdin unless - is passed", async () => {
+  const proc = Bun.spawn(["bun", "-e", `import { input } from "${path.resolve(import.meta.dir, "../src/core")}"; console.log(JSON.stringify(await input([])))`], {
+    cwd: example,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const timer = setTimeout(() => proc.kill(), 3000)
+  expect(await proc.exited).toBe(0)
+  clearTimeout(timer)
+  expect(JSON.parse(await new Response(proc.stdout).text())).toEqual({})
+  proc.stdin.end()
+})
+
 test("JSON stdin accepts a piped object and rejects an empty pipe", async () => {
   for (const value of ["", '{"condition":"name === \\"projects\\""}']) {
     const proc = Bun.spawn(["bun", "-e", `import { input } from "${path.resolve(import.meta.dir, "../src/core")}"; console.log(JSON.stringify(await input(["-"])))`], {

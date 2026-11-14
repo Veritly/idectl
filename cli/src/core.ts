@@ -320,10 +320,7 @@ export function stamp(pid: number) {
 
 export async function input(values: string[]) {
   const inline = values.join(" ").trim()
-  const raw =
-    inline === "-"
-      ? (await Bun.stdin.text()).trim()
-      : inline || (process.stdin.isTTY ? "" : (await Bun.stdin.text()).trim())
+  const raw = inline === "-" ? (await Bun.stdin.text()).trim() : inline
   if (!raw) {
     if (inline === "-") throw new Error("JSON stdin is empty; pipe a JSON object into this command or pass the JSON object as an argument")
     return {}
