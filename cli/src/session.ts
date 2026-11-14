@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
@@ -345,7 +346,12 @@ async function worker(name: string, cleanup: boolean) {
       save(folder, state)
     })
     await attempt(() => stopWeb("browser"))
-    if (node) await attempt(() => stopWeb("backend", rust, item.configuration))
+    if (node) await attempt(async () => {
+      await stopWeb("backend", rust, item.configuration)
+      // The launch wrapper removes its credential directory on exit; a killed process may leave it behind.
+      const tmp = fs.existsSync("/dev/shm") ? "/dev/shm" : os.tmpdir()
+      for (const entry of fs.readdirSync(tmp).filter((row) => row.startsWith(`idectl-env-${item.id}-`))) fs.rmSync(path.join(tmp, entry), { recursive: true, force: true })
+    })
     else await attempt(async () => {
       if (!object(state.backend) || state.backend.owned !== true) return
       const job = jobs(rust).find((row) => row.name === service(name))
@@ -417,12 +423,22 @@ async function worker(name: string, cleanup: boolean) {
       state.backend = { pid: launch.pid, owned: true }
     }
     // A WebStorm service is ready when its debug session runs and its own process answers the health path.
+    // The IDE drops a session's console when its process exits, so keep the last output seen while the process starts.
+    const output = { tail: "" }
     const backend = async () => {
       if (!node) return call(["wait", name, ...rustarg, "--timeout", "3"])
-      const live = (await sessions(rust)).find((row) => object(state.backend) && field(row, ["id", "sessionId"]) === state.backend.id)
-      if (!live || !["running", "paused"].includes(String(live.state))) return { ok: false, phase: "stopped" }
+      const id = object(state.backend) ? state.backend.id : undefined
+      const live = (await sessions(rust)).find((row) => field(row, ["id", "sessionId"]) === id)
+      if (!live || !["running", "paused"].includes(String(live.state)))
+        return { ok: false, phase: "stopped", job: output.tail ? { error: `process output (last lines): ${output.tail}` } : undefined }
       if (live.state === "paused") return { ok: false, phase: "paused" }
       const health = await local(item)
+      if (!health.ok) {
+        const text = await debug.tool(await debug.endpoint(), "get_console_output", { project_path: rust, session_id: id }, 3000).catch(() => undefined)
+        const lines = (text === undefined ? "" : typeof text === "string" ? text : JSON.stringify(text))
+          .replace(/\x1b\[[0-9;]*m/g, "").replace(/\\n/g, "\n").trim().split("\n").slice(-12).join("\n")
+        if (lines) output.tail = lines.slice(-1500)
+      }
       return { ok: health.ok, phase: health.ok ? "ready" : "starting" }
     }
     update("starting services")

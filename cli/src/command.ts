@@ -6,6 +6,7 @@ import { cfg, known, service as find } from "./config"
 
 const bin = cfg.cli
 import { adapter } from "./adapter"
+import { launchenv } from "./setup"
 import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
 import { doctor } from "./doctor"
@@ -82,6 +83,7 @@ ${bin} ready PATH --url URL
 ${bin} wait plugin|frontend|${names} [--timeout SECONDS] [--json]
 ${bin} ides
 ${bin} connect
+${bin} env SERVICE   (WebStorm services: the launch environment as JSON, for script/ide wrappers)
 ${bin} open PATH [LINE] [--ide ID] [--url URL] [--attach ENDPOINT]
 ${bin} close PATH | close --project PATH
 ${bin} route|unroute frontend|${names}
@@ -200,6 +202,13 @@ export async function main() {
         }
       }),
     )
+    return 0
+  }
+  if (group === "env") {
+    const name = args.shift()
+    if (!name || args.length || !known(name) || find(name).ide !== "webstorm") throw new Error("env requires the name of a WebStorm service")
+    // Secrets reach the caller on stdout only; its wrapper applies them in memory and removes dir.
+    print(await launchenv(name))
     return 0
   }
   if (group === "connect") {

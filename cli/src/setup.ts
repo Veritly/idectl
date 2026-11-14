@@ -63,13 +63,26 @@ export async function runtime(name: string) {
   await adapter.connect()
   const job = process.env.IDECTL_JOB
   const dir = job ? fs.mkdtempSync(path.join(job, "secret-")) : fs.mkdtempSync(path.join(fs.existsSync("/dev/shm") ? "/dev/shm" : os.tmpdir(), "idectl-"))
+  return resolve(item, dir, job ? path.join(job, "phase") : "")
+}
+
+/** The launch environment for a service whose IDE cannot inject one (WebStorm). The caller owns and removes `dir`, which holds file-backed credentials. */
+export async function launchenv(name: string) {
+  const item = service(name)
+  await preflight()
+  await adapter.connect()
+  const dir = fs.mkdtempSync(path.join(fs.existsSync("/dev/shm") ? "/dev/shm" : os.tmpdir(), `idectl-env-${item.id}-`))
+  return { env: await resolve(item, dir, ""), dir }
+}
+
+async function resolve(item: ReturnType<typeof service>, dir: string, phase: string) {
   fs.chmodSync(dir, 0o700)
   const resolved = await adapter.env(item, dir)
   const env = { ...resolved.env, PORT: String(port(item)) }
   if (!cfg.hooks.runtime) return env
   const proc = Bun.spawn(cfg.hooks.runtime, {
     cwd: cfg.root,
-    env: { ...process.env, IDECTL_PHASE: job ? path.join(job, "phase") : "" },
+    env: { ...process.env, IDECTL_PHASE: phase },
     stdin: new Blob([JSON.stringify({ service: item.id, configuration: item.configuration, port: port(item), dir, paths: resolved.paths, env })]),
     stdout: "pipe",
     stderr: "inherit",
