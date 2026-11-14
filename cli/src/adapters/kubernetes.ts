@@ -28,9 +28,11 @@ export function kubernetes(opts: Kubernetes): Adapter {
       if (daemon.status === "Connected" && !Array.isArray(daemon.mapped_namespaces))
         throw new Error("Telepresence returned no mapped namespaces")
       const mapped = daemon.mapped_namespaces
-      if (daemon.status === "Connected" && daemon.kubernetes_context === ctx && Array.isArray(mapped) && mapped.includes(ns))
-        return { context: ctx, namespace: ns }
-      if (daemon.status === "Connected")
+      if (daemon.status === "Connected" && daemon.kubernetes_context === ctx && Array.isArray(mapped) && mapped.includes(ns)) {
+        if (daemon.namespace === ns) return { context: ctx, namespace: ns }
+        // Short service names resolve only in the connected namespace; local processes (the frontend proxy) need them.
+        await command(["telepresence", "quit"], root, 10_000)
+      } else if (daemon.status === "Connected")
         throw new Error(`Telepresence is connected to ${String(daemon.kubernetes_context)} without ${ns} mapped`)
     }
     await command(["telepresence", "connect", "--context", ctx, "--namespace", ns, "--mapped-namespaces", ns, "--format", "json", "--progress", "quiet"], root, 10_000)
