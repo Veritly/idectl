@@ -16,6 +16,15 @@ export function kubernetes(opts: Kubernetes): Adapter {
     return value
   }
 
+  /** Deployments and StatefulSets share the pod template and selector this adapter reads; names are unique across both in these namespaces. */
+  async function workload(name: string, timeout: number) {
+    const list = parse(await command(["kubectl", "-n", ns, "get", "deployments,statefulsets", "-o", "json"], root, timeout))
+    const items = object(list) && Array.isArray(list.items) ? list.items.filter(object) : []
+    const found = items.filter((row) => object(row.metadata) && row.metadata.name === name)
+    if (found.length !== 1) throw new Error(`Expected one Deployment or StatefulSet named ${name}; found ${found.length}`)
+    return found[0]
+  }
+
   async function status() {
     return parse(await command(["telepresence", "status", "--format", "json"], root, 5000))
   }
@@ -92,7 +101,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
   }
 
   async function budget(item: Target) {
-    const deployment = parse(await command(["kubectl", "-n", ns, "get", "deployment", item.workload, "-o", "json"], root, 5000))
+    const deployment = await workload(item.workload, 5000)
     const labels = object(deployment) && object(deployment.spec) && object(deployment.spec.template) && object(deployment.spec.template.metadata) && object(deployment.spec.template.metadata.labels)
       ? deployment.spec.template.metadata.labels
       : {}
@@ -138,7 +147,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
   }
 
   async function pods(item: Target) {
-    const deployment = parse(await command(["kubectl", "-n", ns, "get", "deployment", item.workload, "-o", "json"], root, 5000))
+    const deployment = await workload(item.workload, 5000)
     if (!object(deployment) || !object(deployment.spec) || !object(deployment.spec.selector) || !object(deployment.spec.selector.matchLabels))
       throw new Error(`${item.workload} has no pod selector`)
     const selector = Object.entries(deployment.spec.selector.matchLabels).map(([key, value]) => `${key}=${String(value)}`).join(",")
@@ -187,7 +196,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
 
   async function url(item: Target) {
     const [deployment, services] = await Promise.all([
-      command(["kubectl", "-n", ns, "get", "deployment", item.workload, "-o", "json"], root, 5000).then(parse),
+      workload(item.workload, 5000),
       command(["kubectl", "-n", ns, "get", "services", "-o", "json"], root, 5000).then(parse),
     ])
     if (!object(deployment) || !object(deployment.spec) || !object(deployment.spec.template) || !object(deployment.spec.template.metadata) || !object(deployment.spec.template.metadata.labels))
@@ -217,8 +226,8 @@ export function kubernetes(opts: Kubernetes): Adapter {
   }
 
   async function env(item: Service, dir: string) {
-    const deployment = parse(await command(["kubectl", "-n", ns, "get", "deployment", item.workload, "-o", "json"], root, 3000))
-    if (!object(deployment) || !object(deployment.spec) || !object(deployment.spec.template) || !object(deployment.spec.template.spec) ||
+    const deployment = await workload(item.workload, 3000)
+    if (!object(deployment.spec) || !object(deployment.spec.template) || !object(deployment.spec.template.spec) ||
         !Array.isArray(deployment.spec.template.spec.containers))
       throw new Error(`${item.workload} has invalid container configuration`)
     const spec = deployment.spec.template.spec
@@ -302,7 +311,7 @@ export function kubernetes(opts: Kubernetes): Adapter {
     const ctx = await attempt(context)
     const [daemon, list, manager] = await Promise.all([
       attempt(status),
-      attempt(async () => parse(await command(["kubectl", "get", "deployments", "-n", ns, "-o", "json"], root, 5000))),
+      attempt(async () => parse(await command(["kubectl", "get", "deployments,statefulsets", "-n", ns, "-o", "json"], root, 5000))),
       opts.manager && ctx.ok
         ? attempt(async () => parse(await command(["helm", "--kube-context", ctx.value, "--namespace", opts.manager!.namespace, "get", "values", opts.manager!.release, "--all", "--output", "json"], root, 5000)))
         : Promise.resolve(undefined),
