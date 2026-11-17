@@ -105,7 +105,7 @@ ${bin} debug jobs | builds | cancel|recover CONFIGURATION --ide rustrover
 ${bin} debug commands [TOOL] | TOOL [JSON|-]
 ${bin} mcp tools | call TOOL [JSON|-]
 ${bin} jetbrains tools [FILTER] | schema TOOL | call TOOL [JSON|-] [--timeout SECONDS]
-${bin} jetbrains status | configs | output [SESSION]
+${bin} jetbrains status | configs | output [SESSION] | tree PATH [DEPTH]   (tree: expand a paused value, e.g. self.source 4)
 ${bin} test breakpoint
 ${bin} test browser --project PATH --url URL
 

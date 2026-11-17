@@ -111,6 +111,19 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
       print(full ? found : found.map((item) => item.name))
       return 0
     }
+    if (action === "tree") {
+      // The Debugger MCP's variables have no children; the IDE's own tool expands any value, enum variants included.
+      const last = args.at(-1)
+      const depth = last && /^\d+$/.test(last) ? Number(args.pop()) : 2
+      const name = args.join(" ").trim()
+      if (!name) throw new Error("jetbrains tree EXPRESSION [DEPTH]: for example `jetbrains tree self 4`; the path is dotted field names, [0] for an index")
+      const target = project ? path.resolve(project) : opened(ide)
+      if (!target) throw new Error("No IDE project selected; open a project or pass --project")
+      print(content(await client.call("xdebug_get_value_by_path", {
+        projectPath: target, sessionId: opts.session, frameIndex: opts.frame, path: name.split(".").filter(Boolean), depth,
+      })))
+      return 0
+    }
     if (action === "inspect") {
       if (args.length) throw new Error("debug inspect accepts --frame, --service, --project and --session")
       const target = project ? path.resolve(project) : opened(ide)
