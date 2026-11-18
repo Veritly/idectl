@@ -6,7 +6,10 @@ import com.intellij.configurationStore.saveSettings
 import com.intellij.execution.RunManager
 import com.intellij.execution.ExecutionListener
 import com.intellij.execution.impl.ExecutionManagerImpl
+import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessHandler
+import com.intellij.execution.process.ProcessListener
+import com.intellij.openapi.util.Key
 import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.ide.GeneralSettings
 import com.intellij.ide.trustedProjects.TrustedProjects
@@ -33,6 +36,10 @@ data class Run(val id: String, val name: String, val executor: String, val phase
 class Runs {
   val rows = ConcurrentHashMap<String, Run>()
   val handlers = ConcurrentHashMap<String, ProcessHandler>()
+  // The last output of each execution: the debugger tools lose a session's console when its process exits at startup.
+  val output = Collections.synchronizedMap(object : LinkedHashMap<String, StringBuilder>() {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, StringBuilder>) = size > 32
+  })
   private val ids = Collections.synchronizedMap(IdentityHashMap<ExecutionEnvironment, String>())
 
   fun id(env: ExecutionEnvironment): String = synchronized(ids) {
@@ -59,7 +66,18 @@ class Listener : ExecutionListener {
   }
   override fun processStarted(executorId: String, env: ExecutionEnvironment, handler: ProcessHandler) {
     val runs = env.project.service<Runs>()
-    runs.handlers[runs.id(env)] = handler
+    val id = runs.id(env)
+    runs.handlers[id] = handler
+    val text = StringBuilder()
+    runs.output[id] = text
+    handler.addProcessListener(object : ProcessListener {
+      override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
+        synchronized(text) {
+          text.append(event.text)
+          if (text.length > 8000) text.delete(0, text.length - 8000)
+        }
+      }
+    })
     record(executorId, env, "running")
   }
   override fun processTerminating(executorId: String, env: ExecutionEnvironment, handler: ProcessHandler) = record(executorId, env, "stopping")
@@ -120,6 +138,14 @@ class Lifecycle : McpToolset {
         "cancellable" to runs.handlers.containsKey(run.id))
     }
     return Gson().toJson(mapOf("runs" to rows))
+  }
+
+  @McpTool
+  @McpDescription("Return the last output (up to 8000 characters of stdout and stderr) of an IDE execution by the unique ID from idectl_run_status, also after the process exited. Executions without a process handler have none.")
+  suspend fun idectl_run_output(@McpDescription("Execution ID returned by idectl_run_status") id: String): String {
+    val runs = currentCoroutineContext().project.service<Runs>()
+    val text = runs.output[id] ?: error("Execution $id has no captured output")
+    return Gson().toJson(mapOf("id" to id, "output" to synchronized(text) { text.toString() }))
   }
 
   @McpTool

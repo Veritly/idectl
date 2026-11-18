@@ -103,7 +103,7 @@ export async function dispatch(ide: Endpoint, args: string[], opts: { project?: 
     const tools = await client.tools()
     const action = args.shift()
     if (ide.id === "rustrover" && ["builds", "cancel", "start"].includes(action || "") &&
-      !["idectl_run_status", "idectl_run_stop", "idectl_cargo_attach"].every((name) => tools.some((item) => item.name === name)))
+      !["idectl_run_status", "idectl_run_stop", "idectl_run_output", "idectl_cargo_attach"].every((name) => tools.some((item) => item.name === name)))
       throw new Error("Install the current idectl JetBrains lifecycle plugin in RustRover and reopen the IDE")
     if (action === "tools") {
       const query = args.join(" ").trim().toLowerCase()

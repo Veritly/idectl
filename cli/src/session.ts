@@ -456,7 +456,7 @@ async function worker(name: string, cleanup: boolean) {
       if (stopped()) { await clean(); return }
       const [front, back] = await Promise.all([call(["wait", "frontend", ...webarg, "--timeout", "3"]), backend()])
       if (front.phase === "missing") throw new Error(`Frontend debug session disappeared during startup; inspect ${path.join(cfg.state, "frontend.log")} for its retained output`)
-      if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}: ${object(back.job) ? String(back.job.error || "inspect debug jobs") : node ? "inspect its WebStorm session and the process output" : "inspect debug jobs"}`)
+      if (["failed", "stopped", "unknown"].includes(String(back.phase))) throw new Error(`Backend ${String(back.phase)}${object(back.job) && back.job.exitCode !== undefined ? ` (exit ${String(back.job.exitCode)})` : ""}: ${object(back.job) ? String(back.job.error || back.job.output || "inspect debug jobs") : node ? "inspect its WebStorm session and the process output" : "inspect debug jobs"}${object(back.job) && back.job.error && back.job.output ? `\n${String(back.job.output)}` : ""}`)
       if (front.ok && back.ok) break
       const paused = back.phase === "paused" ? name : front.phase === "paused" ? "frontend" : undefined
       update(paused ? "paused" : "starting services", {

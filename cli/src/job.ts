@@ -292,7 +292,12 @@ async function worker(folder: string, recover: boolean) {
         update(stopped() ? "cancelling" : "building", { build })
       } else if (typeof state.session === "string" || ended || (failed && !parent)) {
         clean()
-        update(!stopped() && (failed || (ended && ended.exitCode && ended.exitCode !== 0)) ? "failed" : "stopped", { health: undefined, build: undefined, exitCode: ended?.exitCode, error: failed && !stopped() ? "IDE build or debugger launch failed" : undefined })
+        const crashed = !stopped() && ended && ended.exitCode && ended.exitCode !== 0
+        // The debugger tools lose a session's console once its process exits; the lifecycle plugin keeps each execution's last output.
+        const run = crashed ? current.find((item) => item.name === name && typeof item.id === "string") : undefined
+        const tail = run ? await call(["jetbrains", "call", "idectl_run_output", JSON.stringify({ id: run.id }), ...args]).catch(() => undefined) : undefined
+        const lines = tail && typeof tail.output === "string" ? tail.output.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-12).join("\n") : undefined
+        update(!stopped() && (failed || crashed) ? "failed" : "stopped", { health: undefined, build: undefined, exitCode: ended?.exitCode, output: lines || undefined, error: failed && !stopped() ? "IDE build or debugger launch failed" : undefined })
         return
       } else {
         update(stopped() ? "cancelling" : "starting IDE", { build: undefined })
