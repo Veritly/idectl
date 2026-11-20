@@ -4,7 +4,7 @@ import path from "node:path"
 import { root, object, stamp, rows, field, preview } from "./core"
 import { scope } from "./project"
 import { debuggerClient } from "./debugger"
-import { jobs, enqueue, cancel, service, launchable } from "./job"
+import { jobs, enqueue, cancel, service, launchable, wait as waitJob } from "./job"
 import { vars, preflight, local, attach as link, detach as unlink } from "./service"
 import { adapter } from "./adapter"
 import { cfg, known, service as find, shm } from "./config"
@@ -356,7 +356,8 @@ async function worker(name: string, cleanup: boolean) {
     else await attempt(async () => {
       if (!object(state.backend) || state.backend.owned !== true) return
       const job = jobs(rust).find((row) => row.name === service(name))
-      if (job && job.pid !== state.backend.pid) throw new Error("The backend launch changed; it was preserved")
+      if (job && job.pid !== state.backend.pid && !["stopped", "failed"].includes(String(job.phase)))
+        throw new Error("The backend launch changed; it was preserved")
       if (job && !["stopped", "failed"].includes(String(job.phase))) {
         cancel(service(name), rust)
         const until = Date.now() + 5000
@@ -426,8 +427,8 @@ async function worker(name: string, cleanup: boolean) {
     // A WebStorm service is ready when its debug session runs and its own process answers the health path.
     // The IDE drops a session's console when its process exits, so keep the last output seen while the process starts.
     const output = { tail: "", resumes: 0 }
-    const backend = async () => {
-      if (!node) return call(["wait", name, ...rustarg, "--timeout", "3"])
+    const backend = async (): Promise<Record<string, unknown>> => {
+      if (!node) return waitJob(name, rust, 3)
       const id = object(state.backend) ? state.backend.id : undefined
       const live = (await sessions(rust)).find((row) => field(row, ["id", "sessionId"]) === id)
       if (!live || !["running", "paused"].includes(String(live.state)))

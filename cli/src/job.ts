@@ -158,6 +158,10 @@ async function worker(folder: string, recover: boolean) {
   const token = stamp(process.pid)
   if (!token) throw new Error("Cannot identify launch supervisor")
   const state: Record<string, unknown> = { ...initial, pid: process.pid, token, phase: "preparing" }
+  const cargo = (output: string) => {
+    const text = output.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    return /(?:^|[\r\n])\s*(?:Compiling|Building)\b/.test(text) && !/(?:^|[\r\n])\s*(?:Finished|Running)\b/.test(text)
+  }
   const update = (phase: string, fields: Record<string, unknown> = {}) => {
     Object.assign(state, { error: undefined }, fields, { phase })
     save(folder, state)
@@ -179,7 +183,7 @@ async function worker(folder: string, recover: boolean) {
     update("failed", { error: "This configuration already has an active IDE session" })
     return
   }
-  const initialRuns = await call(["jetbrains", "call", "idectl_run_status", "{}", ...args])
+  const initialRuns = await call(["jetbrains", "call", "idectl_run_status", "{}", "--full", ...args])
   if (!Array.isArray(initialRuns.runs) || !initialRuns.runs.every(object)) throw new Error("IDE returned invalid execution list")
   const priorRuns = recover ? [] : initialRuns.runs.filter(object).map((item) => item.id)
   const active = await call(["jetbrains", "builds", ...args])
@@ -204,10 +208,22 @@ async function worker(folder: string, recover: boolean) {
     const errors = new Response(proc.stderr).text()
     const statefile = path.join(folder, "phase")
     const killed = { before: false }
+    const seen = { time: 0, compiling: false }
     update("preparing", { stage: "preparing" })
     while (proc.exitCode === null) {
       const phase = fs.existsSync(statefile) ? fs.readFileSync(statefile, "utf8") : "preparing"
-      update(stopped() ? "cancelling" : phase)
+      if (phase === "starting IDE" && Date.now() - seen.time >= 1000) {
+        seen.time = Date.now()
+        const rows = await call(["jetbrains", "call", "idectl_run_status", "{}", "--full", ...args]).catch(() => undefined)
+        const runs = Array.isArray(rows?.runs) ? rows.runs.filter(object) : []
+        const run = runs.find((item) => item.name === `Build \`${name}\`` && item.phase === "running" && !priorRuns.includes(item.id)) ||
+          runs.find((item) => item.name === name && ["starting", "running"].includes(String(item.phase)) && !priorRuns.includes(item.id))
+        const tail = typeof run?.id === "string"
+          ? await call(["jetbrains", "call", "idectl_run_output", JSON.stringify({ id: run.id }), ...args]).catch(() => undefined)
+          : undefined
+        seen.compiling = typeof tail?.output === "string" && cargo(tail.output)
+      }
+      update(stopped() ? "cancelling" : seen.compiling ? "compiling" : phase)
       if (stopped() && phase !== "starting IDE") {
         killed.before = true
         try { process.kill(-proc.pid, "SIGTERM") } catch (err) {
@@ -265,7 +281,7 @@ async function worker(folder: string, recover: boolean) {
       )
       const session = sessions.find((item) => item.state === "running" || item.state === "paused")
       const ended = sessions.find((item) => item.state === "stopped" || item.state === "failed_to_start")
-      const execution = await call(["jetbrains", "call", "idectl_run_status", "{}", ...args])
+      const execution = await call(["jetbrains", "call", "idectl_run_status", "{}", "--full", ...args])
       if (!Array.isArray(execution.runs) || !execution.runs.every(object)) throw new Error("IDE returned invalid execution list")
       const current = execution.runs.filter(object).filter((item) => !priorRuns.includes(item.id))
       const parent = current.find((item) => item.name === name && (item.phase === "starting" || item.phase === "running"))
@@ -273,6 +289,11 @@ async function worker(folder: string, recover: boolean) {
       const builds = await call(["jetbrains", "builds", ...args])
       if (!Array.isArray(builds.builds) || !builds.builds.every(object)) throw new Error("IDE returned invalid build list")
       const build = builds.builds.filter(object).find((item) => item.name === name && !priorRuns.includes(item.id))
+      const run = build || parent
+      const tail = typeof run?.id === "string"
+        ? await call(["jetbrains", "call", "idectl_run_output", JSON.stringify({ id: run.id }), ...args]).catch(() => undefined)
+        : undefined
+      const compiling = typeof tail?.output === "string" && cargo(tail.output)
       if (session && typeof session.sessionId === "string") {
         state.session = session.sessionId
         if (stopped()) {
@@ -283,24 +304,24 @@ async function worker(folder: string, recover: boolean) {
         const health = key && session.state === "running" && (!object(state.health) || state.health.ok !== true)
           ? await local(find(key))
           : state.health
-        update(String(session.state), { session: session.sessionId, health })
+        update(session.state === "running" && compiling ? "compiling" : String(session.state), { session: session.sessionId, health })
       } else if (build) {
         if (stopped() && !cancelled.build) {
           await call(["jetbrains", "cancel", name, ...args])
           cancelled.build = String(build.id)
         }
-        update(stopped() ? "cancelling" : "building", { build })
+        update(stopped() ? "cancelling" : compiling ? "compiling" : "building", { build })
       } else if (typeof state.session === "string" || ended || (failed && !parent)) {
         clean()
         const crashed = !stopped() && ended && ended.exitCode && ended.exitCode !== 0
         // The debugger tools lose a session's console once its process exits; the lifecycle plugin keeps each execution's last output.
-        const run = crashed ? current.find((item) => item.name === name && typeof item.id === "string") : undefined
-        const tail = run ? await call(["jetbrains", "call", "idectl_run_output", JSON.stringify({ id: run.id }), ...args]).catch(() => undefined) : undefined
-        const lines = tail && typeof tail.output === "string" ? tail.output.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-12).join("\n") : undefined
+        const crash = crashed ? current.find((item) => item.name === name && typeof item.id === "string") : undefined
+        const text = crash ? await call(["jetbrains", "call", "idectl_run_output", JSON.stringify({ id: crash.id }), ...args]).catch(() => undefined) : undefined
+        const lines = text && typeof text.output === "string" ? text.output.replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-12).join("\n") : undefined
         update(!stopped() && (failed || crashed) ? "failed" : "stopped", { health: undefined, build: undefined, exitCode: ended?.exitCode, output: lines || undefined, error: failed && !stopped() ? "IDE build or debugger launch failed" : undefined })
         return
       } else {
-        update(stopped() ? "cancelling" : "starting IDE", { build: undefined })
+        update(stopped() ? "cancelling" : compiling ? "compiling" : "starting IDE", { build: undefined })
       }
     } catch (err) {
       update("checking IDE", { error: err instanceof Error ? err.message : String(err) })

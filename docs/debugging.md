@@ -29,7 +29,7 @@ To trigger and track a request across a breakpoint, run `debug request NAME /PAT
 ## Services without a session
 
 Use the CLI to launch services: the IDE's Run button does not apply the environment, file-backed credentials or routing.
-`debug start NAME` returns a supervised job immediately; `debug jobs --ide rustrover` shows preparation, build, session and readiness. `debug cancel NAME --ide rustrover` stops it, and its private credential files are removed after the process stops. `wait NAME --json` exits 0 when ready, 2 while starting or paused, and 1 if it failed or stopped. If the supervisor exits, `debug recover NAME --ide rustrover` reattaches only when it can identify the original build or session; check `debug jobs` before retrying.
+`debug start NAME` returns a supervised job immediately; `debug jobs --ide rustrover` shows preparation, `compiling` while Cargo is active, then the running session and readiness. `debug cancel NAME --ide rustrover` stops it, and its private credential files are removed after the process stops. `wait NAME --json` exits 0 when ready, 2 while starting or paused, and 1 if it failed or stopped. If the supervisor exits, `debug recover NAME --ide rustrover` reattaches only when it can identify the original build or session; check `debug jobs` before retrying.
 Start the frontend alone with `debug start frontend --ide webstorm` and stop it with `debug cancel frontend --ide webstorm`.
 IDE lifecycle IDs and debugger session IDs are distinct. A launch timeout means the outcome is unknown: check `jetbrains status` or `debug sessions` before starting again. An IDE build can run before a debugger session appears; `debug builds --ide rustrover` shows it.
 

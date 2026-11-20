@@ -160,7 +160,9 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     const ide = await endpoint()
     if (ide.id !== "webstorm") throw new Error("test browser requires WebStorm")
     const ready = await readiness(cfg.frontend.project)
-    if (!ready.ok || !ready.browser) throw new Error(`Browser is not ready: ${JSON.stringify(ready.stages)}`)
+    if (!ready.browser || Object.entries(ready.stages).some(([key, value]) => key !== "app" && !value.ok))
+      throw new Error(`Browser is not ready: ${JSON.stringify(ready.stages)}`)
+    const browser = ready.browser
     const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
       .filter((item) => item.runConfigurationName === cfg.frontend.browser && ["running", "paused"].includes(String(item.state)))
     if (sessions.length !== 1) throw new Error(`Expected one active browser debug session; found ${sessions.length}`)
@@ -168,6 +170,14 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (!session) throw new Error("Browser debug session has no ID")
     const list = rows(await tool(ide, "list_breakpoints"), "breakpoints")
     if (list.some((item) => item.enabled === true)) throw new Error("Disable existing breakpoints before test browser")
+    await reload(browser.endpoint, url)
+    const until = Date.now() + 90_000
+    while (true) {
+      const page = await attempt(() => inspect(browser.endpoint, url))
+      if (page.ok && mounted(page.value.page)) break
+      if (Date.now() >= until) throw new Error(`app_not_mounted: ${JSON.stringify(page.ok ? page.value.page : page.error)}`)
+      await Bun.sleep(Math.min(2000, until - Date.now()))
+    }
     const target = path.join(root, test.file)
     const source = await Bun.file(target).text()
     const line = source.split("\n").findIndex((row) => row.trim() === test.line) + 1
@@ -178,8 +188,14 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (!id) throw new Error("IDE did not return a breakpoint ID; inspect breakpoints before retrying")
     const state = { paused: false }
     try {
-      await reload(ready.browser.endpoint, url)
-      const hit = await tool(ide, "wait_for_pause", { session_id: session, timeout: 5 }, 7000)
+      await reload(browser.endpoint, url)
+      const result: { hit?: unknown } = {}
+      const limit = Date.now() + 90_000
+      while (Date.now() < limit) {
+        result.hit = await tool(ide, "wait_for_pause", { session_id: session, timeout: 5 }, 7000)
+        if (object(result.hit) && result.hit.state === "paused") break
+      }
+      const hit = result.hit
       if (!object(hit) || hit.state !== "paused" || !object(hit.breakpointHit) || hit.breakpointHit.breakpointId !== id)
         throw new Error(`App breakpoint did not hit: ${JSON.stringify(pause(hit))}; ${JSON.stringify(await diagnosis(ide))}`)
       state.paused = true
