@@ -100,7 +100,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     const saved = await attempt(async () => await Bun.file(record(picked.project)).json() as unknown)
     const matches = typeof selected?.description === "string" && selected.description.includes(new URL(url).href) ||
       selected?.typeId === "ChromiumRemoteDebugType" && saved.ok && object(saved.value) && saved.value.url === new URL(url).href && typeof saved.value.endpoint === "string"
-    const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === cfg.frontend.browser) : undefined
+    const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === cfg.frontend.browser && ["running", "paused"].includes(String(item.state))) : undefined
     const state = sessions?.length === 1 ? sessions[0].state : undefined
     const found = web?.ok ? await attempt(() => tab(web.value.endpoint, url)) : undefined
     const page = web?.ok && found?.ok && state !== "paused" ? await attempt(() => inspect(web.value.endpoint, url)) : undefined
