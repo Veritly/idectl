@@ -3,8 +3,8 @@
 Adds run and debug lifecycle tools to the JetBrains MCP server. The plugin observes IDE executions and can stop an execution when its process handler is available. In RustRover, `idectl_cargo_attach` attaches a Cargo manifest and reports whether its project model is ready.
 
 Cargo attachment enables Rust stepping filters for the standard library and external crates.
-`debuggerPatch` builds the pinned Debugger MCP 5.4.0 dependency with corrected collection of automatically expanded frame scope groups; it requires `-PdebuggerPath=PATH_TO_VERIFIED_UPSTREAM_JAR`.
-The collector source under `src/debugger` derives from hechtcarmel/jetbrains-debugger-mcp-plugin revision `411dc38420824a6b59a56d6685285a7b02a0a053`; its license is preserved there.
+`debuggerPatch` builds the pinned Debugger MCP 5.4.0 dependency with corrected frame scope collection and atomic command history trimming; it requires `-PdebuggerPath=PATH_TO_VERIFIED_UPSTREAM_JAR`.
+The patched sources under `src/debugger` derive from hechtcarmel/jetbrains-debugger-mcp-plugin revision `411dc38420824a6b59a56d6685285a7b02a0a053`; its license is preserved there.
 
 RustRover's standard Cargo build task emits a separate `Build ` execution with its own ID. IDs are assigned per IDE execution because some JetBrains build events use execution ID zero. Only cancel an execution while its `cancellable` field is true. Stopping uses the IDE Stop button's own path, so a configuration that reconnects after a disconnect stays stopped.
 

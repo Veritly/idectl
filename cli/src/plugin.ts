@@ -11,7 +11,7 @@ const base = path.join(os.homedir(), ".cache/idectl/plugin")
 const revision = sources(plugin)
 const debuggerHash = "cd277059784084db72cbdc7f7072f182df11a37a89e54f29ae5e16f39c89ca84"
 const debuggerUrl = "https://plugins.jetbrains.com/files/29233/1213010/jetbrains-debugger-mcp-plugin-5.4.0.zip"
-const patched = "b788404ccdb2cf491211da880674909fc583cad3f51b0752df769e20107d1b68"
+const patched = "180da459be032072c0a57aa988a698efb66738c07b46675d05c1aeab0b61bdc6"
 const debuggerJar = "lib/jetbrains-debugger-mcp-plugin-5.4.0.jar"
 
 function files(dir: string): string[] {
@@ -171,7 +171,7 @@ export function installDebugger(target: string, dir: string, active: boolean, na
   if (out.exitCode !== 0) throw new Error("Could not extract the verified debugger plugin")
   const plugin = path.join(stage, "jetbrains-debugger-mcp-plugin")
   if (!validDebugger(plugin, false)) throw new Error("Extracted debugger plugin files do not match the verified release")
-  if (!patch || !fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger scope patch is missing or invalid")
+  if (!patch || !fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger patch is missing or invalid")
   fs.copyFileSync(patch, path.join(plugin, debuggerJar))
   if (!validDebugger(plugin)) throw new Error("Patched debugger plugin files do not match the verified build")
   const backup = path.join(base, `debugger-backup-${Date.now()}-${process.pid}`)
@@ -230,7 +230,7 @@ async function worker(dir: string, sdk: string, build: string) {
     if (digest(original) !== debuggerFiles[debuggerJar]) throw new Error("Debugger build dependency checksum is invalid")
     await run(["./gradlew", "buildPlugin", "debuggerPatch", `-PidePath=${sdk}`, `-PdebuggerPath=${original}`, "--no-daemon", "--console=plain"], source, log, { ...globalThis.process.env, JAVA_HOME: java })
     const patch = path.join(source, "build/distributions/debugger-patched.jar")
-    if (!fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger scope patch checksum is invalid")
+    if (!fs.existsSync(patch) || digest(patch) !== patched) throw new Error("Debugger patch checksum is invalid")
     fs.copyFileSync(patch, path.join(dir, "debugger-patched.jar"))
     const archive = path.join(source, "build/distributions/idectl-lifecycle.zip")
     const jar = path.join(dir, "plugin.jar")

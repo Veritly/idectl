@@ -30,9 +30,18 @@ tasks.register<Jar>("debuggerPatch") {
   isPreserveFileTimestamps = false
   isReproducibleFileOrder = true
   from(zipTree(providers.gradleProperty("debuggerPath"))) {
-    exclude("META-INF/MANIFEST.MF", "com/github/hechtcarmel/jetbrainsdebuggermcpplugin/tools/util/FrameVariablesCollector*")
+    exclude(
+      "META-INF/MANIFEST.MF",
+      "com/github/hechtcarmel/jetbrainsdebuggermcpplugin/tools/util/FrameVariablesCollector*",
+      "com/github/hechtcarmel/jetbrainsdebuggermcpplugin/history/CommandHistoryService*",
+    )
   }
-  from(debugger.output) { include("com/github/hechtcarmel/jetbrainsdebuggermcpplugin/tools/util/FrameVariablesCollector*.class") }
+  from(debugger.output) {
+    include(
+      "com/github/hechtcarmel/jetbrainsdebuggermcpplugin/tools/util/FrameVariablesCollector*.class",
+      "com/github/hechtcarmel/jetbrainsdebuggermcpplugin/history/CommandHistoryService*.class",
+    )
+  }
 }
 
 intellijPlatform {
