@@ -3,7 +3,7 @@ import path from "node:path"
 import { unbound } from "./lines"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
-import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
+import { root, ides, object, print, attempt, launcher, input, opened, rows, runs, field } from "./core"
 import { cfg, needFrontend, known, service as find } from "./config"
 
 const bin = cfg.cli
@@ -13,7 +13,7 @@ import { lifecycle } from "./lifecycle"
 import { debuggerClient } from "./debugger"
 import { doctor } from "./doctor"
 import { checks } from "./checks"
-import { kill, preflight, attach, detach } from "./service"
+import { kill, preflight, attach, detach, vars } from "./service"
 import { enqueue, jobs, cancel, recover, wait, service, managed, launchable } from "./job"
 import { retry as retryPlugin, wait as waitPlugin } from "./plugin"
 import { up as sessionUp, down as sessionDown, wait as sessionWait, browser as sessionBrowser, context as sessionContext, matching as sessionMatching, owner as sessionOwner, blocked as sessionBlocked } from "./session"
@@ -56,7 +56,8 @@ const job = scope && context && (!selected || project === context.project)
   : undefined
 const session = explicitSession || (typeof job?.session === "string" || typeof job?.session === "number" ? String(job.session) : undefined)
 const web = args[0] === "debug" && ["start", "cancel"].includes(args[1] || "") && args[2] === "frontend"
-const chosen = explicit || (scope ? backend : args[0] === "breakpoint" && args[1] === "set" && path.extname(args[2] || "") === ".rs" ? "rustrover" : web ? "webstorm" : undefined)
+const byFile: Record<string, string> = { ".rs": "rustrover", ".dart": "android-studio" }
+const chosen = explicit || (scope ? backend : args[0] === "breakpoint" && args[1] === "set" && byFile[path.extname(args[2] || "")] ? byFile[path.extname(args[2] || "")] : web ? "webstorm" : undefined)
 const timeout = option("--timeout")
 const until = option("--until")
 const frame = option("--frame")
@@ -65,6 +66,7 @@ const full = flag("--full")
 const once = flag("--once")
 const condition = option("--condition")
 flag("--json")
+const device = option("--device")
 const url = option("--url")
 const remote = option("--attach")
 
@@ -271,7 +273,7 @@ export async function main() {
       const line = Number(args.shift())
       if (!target || !Number.isInteger(line) || line < 1) throw new Error("breakpoint set requires FILE LINE")
       const ext = path.extname(target)
-      const owner = ext === ".rs" ? "rustrover" : [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined
+      const owner = byFile[ext] || ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(ext) ? "webstorm" : undefined)
       if (owner && owner !== ide.id)
         throw new Error(`${target} belongs in ${owner}, but this selector chose ${ide.id}; use breakpoint set ${target} ${line}${once ? " --once" : ""} --ide ${owner} without --service`)
       // --service names a backend that already selected its own project; the browser-project rule is for frontend files.
@@ -360,10 +362,10 @@ export async function main() {
     }
     if (action === "cancel") {
       const name = args.join(" ").trim()
-      const target = name === "frontend" ? needFrontend().configuration : name === "browser" ? needFrontend().browser : name
+      const target = name === "frontend" ? needFrontend().configuration : name === "browser" ? needFrontend().browser : service(name)
       if (!target) throw new Error("debug cancel requires a configuration name")
       const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
-        .filter((item) => item.runConfigurationName === target && ["running", "paused"].includes(String(item.state)))
+        .filter((item) => runs(item, target) && ["running", "paused"].includes(String(item.state)))
       if (!sessions.length) { print({ ok: true, name: target, phase: "stopped" }); return 0 }
       if (sessions.length !== 1) throw new Error(`Multiple sessions for ${target}; select --session ID and use debug stop`)
       const id = field(sessions[0], ["id", "sessionId"])
@@ -553,9 +555,17 @@ export async function main() {
       print(await tool(ide, "evaluate_expression", { expression: `${target} = (${value})`, frame_index: index() }))
     } else if (action === "start") {
       const value = args.join(" ").trim()
-      const name = value === "frontend" ? needFrontend().configuration : value === "browser" ? needFrontend().browser : value
+      // A service name stands for its run configuration; the project's preflight runs first, as it does for Rust jobs.
+      const name = value === "frontend" ? needFrontend().configuration : value === "browser" ? needFrontend().browser : service(value)
       if (!name) throw new Error("debug start requires a configuration name")
+      if (known(value)) await preflight()
       const run = await config(ide, name)
+      if (run.typeId === "FlutterRunConfigurationType") {
+        // The Flutter plugin launches on the device its toolbar selector holds, not one named in the configuration.
+        const variable = known(value) ? find(value).device : undefined
+        const target = device || (variable ? vars()[variable] : undefined)
+        if (target) await debug.flutterDevice(ide, target)
+      }
       const prior = ide.id === "webstorm" && run.typeId === "JavascriptDebugType" ? (await debug.browserProcesses(ide)).map((row) => row.pid) : undefined
       const result = await launch(ide, name)
       if (ide.id === "webstorm" && run.typeId === "JavascriptDebugType") {

@@ -4,7 +4,7 @@ Commands below are written as `idectl`; use the project's `cli` entry from `idec
 
 ## IDEs and the plugin
 
-`idectl open PATH` selects WebStorm or RustRover for the component, generates a small IDE project, and waits up to 20s; exit 2 means it is still starting. A Rust project indexes its whole Cargo workspace, so sibling crates are searchable.
+`idectl open PATH` selects WebStorm, RustRover or Android Studio (a component with a `pubspec.yaml`) for the component, generates a small IDE project, and waits up to 20s; exit 2 means it is still starting. A Rust project indexes its whole Cargo workspace, so sibling crates are searchable.
 `open` installs the lifecycle plugin (built from this repository's `plugin/` with the installed RustRover) and the Debugger MCP plugin. The first build runs in the background: `wait plugin --ide rustrover --json`, then repeat `open`. An IDE already running with an older plugin must be closed before it can install. `plugin retry` retries a failed build after you fix the cause in its log. Automatic installation supports Linux and 263-series IDEs.
 `doctor` checks the IDE, both MCP servers, the plugin, the selected project and the environment adapter. With several open projects it returns `selection_required` and the exact commands to choose one; `doctor --service NAME` selects a service's project.
 Shared run configurations in the checkout's `.run` are copied into the IDE project; `open` reloads them in an already-open project. They contain no environment values.
@@ -32,6 +32,8 @@ Use the CLI to launch services: the IDE's Run button does not apply the environm
 `debug start NAME` returns a supervised job immediately; `debug jobs --ide rustrover` shows preparation, `compiling` while Cargo is active, then the running session and readiness. `debug cancel NAME --ide rustrover` stops it, and its private credential files are removed after the process stops. `wait NAME --json` exits 0 when ready, 2 while starting or paused, and 1 if it failed or stopped. If the supervisor exits, `debug recover NAME --ide rustrover` reattaches only when it can identify the original build or session; check `debug jobs` before retrying.
 Start the frontend alone with `debug start frontend --ide webstorm` and stop it with `debug cancel frontend --ide webstorm`.
 IDE lifecycle IDs and debugger session IDs are distinct. A launch timeout means the outcome is unknown: check `jetbrains status` or `debug sessions` before starting again. An IDE build can run before a debugger session appears; `debug builds --ide rustrover` shows it.
+
+`debug start NAME` accepts a service name for any IDE: it runs the project's preflight, then starts that service's run configuration under the debugger. For a Flutter configuration it first selects the service's `device` (or `--device ID`) in the IDE. A Flutter session is named after its device ("App (Pixel 8)"); `--service NAME` still selects it.
 
 ## Breakpoints and inspection
 

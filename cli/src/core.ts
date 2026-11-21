@@ -42,6 +42,12 @@ export const ides: Ide[] = [
   { id: "dataspell", name: "DataSpell", port: 29201, bins: ["dataspell"], apps: ["dataspell"] },
   { id: "rider", name: "Rider", port: 29202, bins: ["rider"], apps: ["rider"] },
 ]
+/** Whether a debug session belongs to a run configuration. Flutter appends the device to the session's name: "App (Pixel 8)". */
+export function runs(row: Json, configuration: string) {
+  const name = String(row.runConfigurationName ?? "")
+  return name === configuration || (name.startsWith(`${configuration} (`) && name.endsWith(")"))
+}
+
 export function object(value: unknown): value is Json {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }

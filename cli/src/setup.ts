@@ -13,10 +13,11 @@ export async function settings(bin: string, dir: string, ide: Ide) {
   const info: unknown = JSON.parse(fs.readFileSync(file, "utf8"))
   if (!object(info) || typeof info.dataDirectoryName !== "string")
     throw new Error(`Invalid IDE product metadata: ${file}`)
+  const vendor = typeof info.productVendor === "string" && /^[A-Za-z0-9._-]+$/.test(info.productVendor) ? info.productVendor : "JetBrains"
   const base =
     process.platform === "darwin"
-      ? path.join(os.homedir(), "Library/Application Support/JetBrains")
-      : path.join(os.homedir(), ".config/JetBrains")
+      ? path.join(os.homedir(), "Library/Application Support", vendor)
+      : path.join(os.homedir(), ".config", vendor)
   await command(
     [
       "python3",

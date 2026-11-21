@@ -31,8 +31,8 @@ function read(folder: string) {
 }
 
 export function context(name: string) {
-  needFrontend()
   if (name === "frontend") {
+    needFrontend()
     const active = owner()
     throw new Error(`--service selects a backend service; use ${active ? active.context.join(" ") : `--ide webstorm --project ${front.project} --session ID`} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
   }

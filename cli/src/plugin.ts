@@ -39,14 +39,62 @@ function product(bin: string) {
   const info: unknown = JSON.parse(fs.readFileSync(file, "utf8"))
   if (!object(info) || typeof info.buildNumber !== "string" || typeof info.dataDirectoryName !== "string")
     throw new Error(`Invalid JetBrains product metadata: ${file}`)
-  if (!/^\d+\.\d+\.\d+$/.test(info.buildNumber) || !/^[A-Za-z0-9._-]+$/.test(info.dataDirectoryName))
+  if (!/^\d+(\.\d+)+$/.test(info.buildNumber) || !/^[A-Za-z0-9._-]+$/.test(info.dataDirectoryName))
     throw new Error(`Invalid JetBrains product identifier: ${file}`)
-  return { dir, build: info.buildNumber, name: info.dataDirectoryName }
+  // IDEs built on the platform by another vendor (Android Studio: Google) keep their data under that vendor's directory.
+  const vendor = typeof info.productVendor === "string" && /^[A-Za-z0-9._-]+$/.test(info.productVendor) ? info.productVendor : "JetBrains"
+  return { dir, build: info.buildNumber, name: info.dataDirectoryName, vendor }
 }
 
-function folder(name: string) {
-  if (process.platform === "linux") return path.join(os.homedir(), ".local/share/JetBrains", name, "idectl-lifecycle")
+type Product = ReturnType<typeof product>
+
+/** Where the IDE keeps user-installed plugins. */
+export function plugins(info: Product) {
+  if (process.platform === "linux") return path.join(os.homedir(), ".local/share", info.vendor, info.name)
   throw new Error("Automatic JetBrains plugin installation currently supports Linux")
+}
+
+/**
+ * The IDE the lifecycle plugin is compiled against. A 263-series IDE uses RustRover's SDK and the patched debugger, as
+ * before. Any other IDE is its own SDK: the plugin is built against that IDE and the Marketplace debugger is used as is.
+ */
+function sdkFor(bin: string) {
+  const info = product(bin)
+  const rust = ides.find((item) => item.id === "rustrover")
+  const rustbin = rust ? launcher(rust) : undefined
+  if (info.build.startsWith("263.") && rustbin) {
+    const sdk = product(rustbin)
+    if (sdk.build.startsWith("263.")) return { ...sdk, self: false }
+  }
+  return { ...info, self: true }
+}
+
+const marketplace = { debugger: "com.github.hechtcarmel.jetbrainsdebuggermcpplugin", mcp: "com.intellij.mcpServer" }
+
+function bundled(info: Product, name: string) {
+  return fs.existsSync(path.join(info.dir, "plugins", name))
+}
+
+function mcpPath(info: Product) {
+  return bundled(info, "mcpserver") ? undefined : path.join(plugins(info), "mcpserver")
+}
+
+function debuggerInstalled(info: Product) {
+  const lib = path.join(plugins(info), "jetbrains-debugger-mcp-plugin/lib")
+  return fs.existsSync(lib) && fs.readdirSync(lib).some((name) => /^jetbrains-debugger-mcp-plugin-[\d.]+\.jar$/.test(name))
+}
+
+/** Installs Marketplace plugins with the IDE's own installer; only possible while the IDE is not running. */
+function marketplaceInstall(bin: string, ids: string[]) {
+  const out = Bun.spawnSync([bin, "installPlugins", ...ids], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 180_000 })
+  if (out.exitCode !== 0) throw new Error(`${path.basename(bin)} installPlugins ${ids.join(" ")} failed: ${out.stderr.toString().trim().slice(-400)}`)
+  // The platform lists plugins from other vendors here and blocks startup on a consent dialog until it is gone.
+  const info = product(bin)
+  for (const dir of [plugins(info), path.join(os.homedir(), ".config", info.vendor, info.name)]) fs.rmSync(path.join(dir, "alien_plugins.txt"), { force: true })
+}
+
+function folder(info: Product) {
+  return path.join(plugins(info), "idectl-lifecycle")
 }
 
 function validDebugger(target: string, patch = true) {
@@ -56,8 +104,8 @@ function validDebugger(target: string, patch = true) {
   })
 }
 
-function running(name: string) {
-  const file = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "JetBrains", name, ".pid")
+function running(info: Product) {
+  const file = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), info.vendor, info.name, ".pid")
   if (!fs.existsSync(file)) return false
   const pid = Number(fs.readFileSync(file, "utf8").trim())
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`Invalid JetBrains process record: ${file}`)
@@ -108,11 +156,9 @@ async function run(args: string[], cwd: string, log: number, env = globalThis.pr
 }
 
 export function retry() {
-  const rust = ides.find((item) => item.id === "rustrover")
-  if (!rust) throw new Error("RustRover is required to build the JetBrains lifecycle plugin")
-  const bin = launcher(rust)
-  if (!bin) throw new Error("Install RustRover to build the JetBrains lifecycle plugin")
-  const dirs = [path.join(base, `${revision}-${product(bin).build}`), path.join(base, "debugger-5.4.0")]
+  const builds = ides.map((item) => launcher(item)).filter((bin): bin is string => Boolean(bin)).map((bin) => sdkFor(bin).build)
+  if (!builds.length) throw new Error("No JetBrains IDE is installed")
+  const dirs = [...new Set(builds)].map((build) => path.join(base, `${revision}-${build}`)).concat(path.join(base, "debugger-5.4.0"))
   const failed = dirs.filter((dir) => fs.existsSync(dir) && state(dir).phase === "failed")
   if (!failed.length) throw new Error("No plugin installation has failed")
   const previous = failed.map((dir) => {
@@ -203,7 +249,7 @@ export function install(target: string, dir: string, active: boolean, name: stri
   return { ok: true, phase: "installed" }
 }
 
-async function worker(dir: string, sdk: string, build: string) {
+async function worker(dir: string, sdk: string, build: string, self = false, mcp = "", flutter = "") {
   const file = path.join(dir, "state.json")
   const token = stamp(globalThis.process.pid)
   if (!token) throw new Error("Cannot identify plugin build process")
@@ -216,7 +262,20 @@ async function worker(dir: string, sdk: string, build: string) {
     if (sources(source) !== revision) throw new Error("Plugin source changed while it was copied; retry the plugin build")
     update("building")
     const java = path.join(sdk, "jbr")
-    if (!fs.existsSync(path.join(java, "bin/java"))) throw new Error("The RustRover runtime is missing")
+    if (!fs.existsSync(path.join(java, "bin/java"))) throw new Error(`The IDE runtime is missing: ${java}`)
+    if (self) {
+      // Built against the target IDE itself: no Rust toolset unless that IDE has the Rust plugin, and no debugger patch.
+      const rust = fs.existsSync(path.join(sdk, "plugins/intellij-rust")) || fs.existsSync(path.join(sdk, "plugins/rust"))
+      await run(["./gradlew", "buildPlugin", `-PidePath=${sdk}`, `-PsinceBuild=${build.split(".")[0]}`, `-Prust=${rust}`, ...(mcp ? [`-PmcpServerPath=${mcp}`] : []), ...(flutter ? [`-PflutterPath=${flutter}`] : []), "--no-daemon", "--console=plain"], source, log, { ...globalThis.process.env, JAVA_HOME: java })
+      const archive = path.join(source, "build/distributions/idectl-lifecycle.zip")
+      const jar = path.join(dir, "plugin.jar")
+      const out = Bun.spawn(["unzip", "-p", archive, "idectl-lifecycle/lib/idectl-lifecycle.jar"], { stdout: "pipe", stderr: log, stdin: "ignore" })
+      const bytes = await new Response(out.stdout).arrayBuffer()
+      if (await out.exited !== 0 || bytes.byteLength === 0) throw new Error("Plugin archive does not contain the expected JAR")
+      fs.writeFileSync(jar, Buffer.from(bytes), { mode: 0o600 })
+      update("ready", { sha256: digest(jar) })
+      return
+    }
     const downloaded = path.join(base, "debugger-5.4.0")
     fs.mkdirSync(downloaded, { recursive: true, mode: 0o700 })
     const zip = path.join(downloaded, "debugger.zip")
@@ -248,45 +307,48 @@ async function worker(dir: string, sdk: string, build: string) {
 
 export function inspect(ide: Ide, bin: string) {
   const info = product(bin)
-  if (!info.build.startsWith("263.")) return { ok: false, phase: "unsupported", error: `${ide.name} ${info.build} is not supported by the pinned lifecycle plugin` }
-  const target = folder(info.name)
-  const debuggerReady = validDebugger(path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin"))
+  const sdk = sdkFor(bin)
+  const target = folder(info)
+  const debuggerReady = sdk.self ? debuggerInstalled(info) : validDebugger(path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin"))
   const jar = path.join(target, "lib/idectl-lifecycle.jar")
   const marker = read(path.join(target, ".idectl.json"))
   if (fs.existsSync(jar)) {
     const hash = digest(jar)
-    const rust = ides.find((item) => item.id === "rustrover")
-    const rustbin = rust ? launcher(rust) : undefined
-    if (marker?.revision === revision && marker.sha256 === hash && marker.ide === info.build && rustbin && marker.sdk === product(rustbin).build)
+    if (marker?.revision === revision && marker.sha256 === hash && marker.ide === info.build && marker.sdk === sdk.build)
       return { ok: debuggerReady, phase: debuggerReady ? "ready" : "missing_debugger" }
   }
   return { ok: false, phase: "missing" }
 }
 
 export function ensure(ide: Ide, bin: string, active: boolean) {
-  const name = product(bin).name
-  const live = active || running(name)
+  const info = product(bin)
+  const live = active || running(info)
   const status = inspect(ide, bin)
   if (status.ok) return { ...status, running: live }
-  if (status.phase === "unsupported") throw new Error(status.error)
-  const target = folder(name)
-  const debuggerTarget = path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin")
-  const rust = ides.find((item) => item.id === "rustrover")
-  if (!rust) throw new Error("RustRover is required to build the JetBrains lifecycle plugin")
-  const rustbin = launcher(rust)
-  if (!rustbin) throw new Error("Install RustRover to build the JetBrains lifecycle plugin")
-  const sdk = product(rustbin)
-  if (!sdk.build.startsWith("263.")) throw new Error(`RustRover ${sdk.build} is not supported by the pinned lifecycle plugin`)
+  const target = folder(info)
+  const sdk = sdkFor(bin)
+  if (sdk.self) {
+    // The IDE's own MCP server and the debugger come from the Marketplace when the IDE does not bundle them.
+    const missing = [...(mcpPath(info) && !fs.existsSync(mcpPath(info)!) ? [marketplace.mcp] : []), ...(debuggerInstalled(info) ? [] : [marketplace.debugger])]
+    if (missing.length) {
+      if (live) return { ok: false, phase: "plugin_restart_required", message: `Close ${ide.name} after finishing active work, then open the project again`, running: live }
+      marketplaceInstall(bin, missing)
+    }
+  }
   const dir = path.join(base, `${revision}-${sdk.build}`)
-  enqueue(dir, ["worker", dir, sdk.dir, sdk.build])
+  const flutter = path.join(plugins(info), "flutter-intellij")
+  enqueue(dir, ["worker", dir, sdk.dir, sdk.build, String(sdk.self), sdk.self ? mcpPath(info) || "" : "", sdk.self && fs.existsSync(flutter) ? flutter : ""])
   const current = state(dir)
   if (current.phase === "failed") return { ok: false, phase: "plugin_failed", error: current.error, running: live }
   if (current.phase !== "ready") return { ok: false, phase: "plugin_installing", stage: current.phase, running: live }
-  if (!validDebugger(debuggerTarget)) {
-    const result = installDebugger(debuggerTarget, path.join(base, "debugger-5.4.0"), live, ide.name, path.join(dir, "debugger-patched.jar"))
-    if (!result.ok) return { ...result, running: live }
+  if (!sdk.self) {
+    const debuggerTarget = path.join(path.dirname(target), "jetbrains-debugger-mcp-plugin")
+    if (!validDebugger(debuggerTarget)) {
+      const result = installDebugger(debuggerTarget, path.join(base, "debugger-5.4.0"), live, ide.name, path.join(dir, "debugger-patched.jar"))
+      if (!result.ok) return { ...result, running: live }
+    }
   }
-  return { ...install(target, dir, live, ide.name, product(bin).build), running: live }
+  return { ...install(target, dir, live, ide.name, info.build), running: live }
 }
 
 export async function wait(ide: Ide, bin: string, seconds: number) {
@@ -300,8 +362,8 @@ export async function wait(ide: Ide, bin: string, seconds: number) {
 }
 
 if (import.meta.main) {
-  if (globalThis.process.argv[2] === "worker" && globalThis.process.argv.length === 6)
-    await worker(globalThis.process.argv[3], globalThis.process.argv[4], globalThis.process.argv[5])
+  if (globalThis.process.argv[2] === "worker" && [6, 9].includes(globalThis.process.argv.length))
+    await worker(globalThis.process.argv[3], globalThis.process.argv[4], globalThis.process.argv[5], globalThis.process.argv[6] === "true", globalThis.process.argv[7] || "", globalThis.process.argv[8] || "")
   else if (globalThis.process.argv[2] === "download" && globalThis.process.argv.length === 4)
     await download(globalThis.process.argv[3])
   else throw new Error("Invalid plugin worker invocation")

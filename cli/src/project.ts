@@ -13,12 +13,23 @@ export function scope(cwd: string, target: string, home = os.homedir()) {
   const file = fs.statSync(source).isFile()
   const dir = file ? path.dirname(source) : source
   const rust = path.extname(source) === ".rs"
+  const dart = path.extname(source) === ".dart"
   const component = ancestors(dir, root).find(
     (dir) =>
-      fs.existsSync(path.join(dir, rust ? "Cargo.toml" : "package.json")) ||
-      fs.existsSync(path.join(dir, "Cargo.toml")),
+      fs.existsSync(path.join(dir, rust ? "Cargo.toml" : dart ? "pubspec.yaml" : "package.json")) ||
+      fs.existsSync(path.join(dir, "Cargo.toml")) ||
+      fs.existsSync(path.join(dir, "pubspec.yaml")),
   )
   if (!component || component === root) throw new Error(`No component manifest found for ${source}`)
+  if (!rust && !fs.existsSync(path.join(component, "Cargo.toml")) && fs.existsSync(path.join(component, "pubspec.yaml")) && (dart || !fs.existsSync(path.join(component, "package.json")))) {
+    // Dart and Flutter packages debug in Android Studio. A pub workspace resolves every member's packages from the
+    // workspace root, so all its members share one IDE project rooted there (as a Cargo workspace does in RustRover).
+    const workspace = ancestors(component, root).filter((dir) => fs.existsSync(path.join(dir, "pubspec.yaml")) && /^workspace:/m.test(fs.readFileSync(path.join(dir, "pubspec.yaml"), "utf8"))).at(-1)
+    const content = workspace || component
+    const key = new Bun.CryptoHasher("sha256").update(root).digest("hex").slice(0, 12)
+    const project = path.join(home, ".local/share/idectl/projects", key, path.relative(root, content) || "_workspace")
+    return { root, source, file, component, content, project, ide: "android-studio" }
+  }
   const ide = rust || fs.existsSync(path.join(component, "Cargo.toml")) ? "rustrover" : "webstorm"
   if (ide === "rustrover" && !fs.existsSync(path.join(component, "src")))
     throw new Error(`Choose a Rust component with a src directory, rather than a workspace: ${component}`)
@@ -40,6 +51,17 @@ function xml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
 }
 
+/** The Dart SDK: Flutter's bundled one when Flutter is installed, else the SDK that owns `dart` on PATH. */
+function dartSdk() {
+  const flutter = Bun.which("flutter")
+  const bundled = flutter ? path.join(path.dirname(path.dirname(fs.realpathSync(flutter))), "bin/cache/dart-sdk") : undefined
+  if (bundled && fs.existsSync(path.join(bundled, "lib"))) return bundled
+  const dart = Bun.which("dart")
+  const own = dart ? path.dirname(path.dirname(fs.realpathSync(dart))) : undefined
+  if (own && fs.existsSync(path.join(own, "lib/core"))) return own
+  throw new Error("Dart SDK is missing; install Flutter or Dart on this VM and put it on PATH")
+}
+
 function configured() {
   return new Set([...(cfg.frontend ? [cfg.frontend.configuration, cfg.frontend.browser] : []), ...Object.values(cfg.services).map((item) => item.configuration), ...Object.values(cfg.attach).map((item) => item.configuration)])
 }
@@ -47,10 +69,27 @@ function configured() {
 export function prepare(value: ReturnType<typeof scope>) {
   const dir = path.join(value.project, ".idea")
   fs.mkdirSync(dir, { recursive: true })
+  const dart = value.ide === "android-studio"
+  // The IDE also loads run configurations it finds under a content root, where $PROJECT_DIR$ would mean this generated
+  // project; the checkout's .run templates are copied below with real paths, so keep the originals out of the module.
+  const run = path.join(value.root, ".run")
+  const excluded = run.startsWith(`${value.content}${path.sep}`) ? `<excludeFolder url="${xml(pathToFileURL(run).href)}"/>` : ""
   save(
     path.join(dir, "source.iml"),
-    `<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager"><content url="${xml(pathToFileURL(value.content).href)}"><excludePattern pattern="node_modules"/><excludePattern pattern="target"/><excludePattern pattern="dist"/></content><orderEntry type="sourceFolder" forTests="false"/></component></module>`,
+    dart
+      ? `<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager"><content url="${xml(pathToFileURL(value.content).href)}"><excludePattern pattern=".dart_tool"/><excludePattern pattern="build"/><excludePattern pattern="node_modules"/>${excluded}</content><orderEntry type="sourceFolder" forTests="false"/><orderEntry type="library" name="Dart SDK" level="project"/><orderEntry type="library" name="Dart Packages" level="project"/></component></module>`
+      : `<module type="WEB_MODULE" version="4"><component name="NewModuleRootManager"><content url="${xml(pathToFileURL(value.content).href)}"><excludePattern pattern="node_modules"/><excludePattern pattern="target"/><excludePattern pattern="dist"/></content><orderEntry type="sourceFolder" forTests="false"/></component></module>`,
   )
+  if (dart) {
+    // The Dart plugin treats a project as Dart-enabled when its module depends on a project library named "Dart SDK".
+    const sdk = dartSdk()
+    const roots = fs.readdirSync(path.join(sdk, "lib"), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()
+    fs.mkdirSync(path.join(dir, "libraries"), { recursive: true })
+    save(
+      path.join(dir, "libraries/Dart_SDK.xml"),
+      `<component name="libraryTable"><library name="Dart SDK"><CLASSES>${roots.map((name) => `<root url="${xml(pathToFileURL(path.join(sdk, "lib", name)).href)}"/>`).join("")}</CLASSES><JAVADOC/><SOURCES/></library></component>`,
+    )
+  }
   save(
     path.join(dir, "modules.xml"),
     '<project version="4"><component name="ProjectModuleManager"><modules><module fileurl="file://$PROJECT_DIR$/.idea/source.iml" filepath="$PROJECT_DIR$/.idea/source.iml"/></modules></component></project>',
@@ -82,8 +121,12 @@ export function prepare(value: ReturnType<typeof scope>) {
   for (const name of fs.readdirSync(shared)) {
     if (!name.endsWith(".run.xml")) continue
     const template = fs.readFileSync(path.join(value.root, ".run", name), "utf8")
-    const type = value.ide === "rustrover" ? 'type="CargoCommandRunConfiguration"' : 'type="BunRunConfiguration"'
-    if (!template.includes(type) && !(value.ide === "webstorm" && (template.includes('type="JavascriptDebugType"') || template.includes('type="NodeJSConfigurationType"') || template.includes('type="ChromiumRemoteDebugType"')))) continue
+    const types: Record<string, string[]> = {
+      rustrover: ["CargoCommandRunConfiguration"],
+      webstorm: ["BunRunConfiguration", "JavascriptDebugType", "NodeJSConfigurationType", "ChromiumRemoteDebugType"],
+      "android-studio": ["DartCommandLineRunConfigurationType", "FlutterRunConfigurationType", "DartTestRunConfigurationType"],
+    }
+    if (!(types[value.ide] || []).some((type) => template.includes(`type="${type}"`))) continue
     // A configuration with a missing program makes the IDE open a modal editor that blocks every later launch.
     const label = template.match(/<configuration[^>]* name="([^"]+)"/)?.[1]
     const program = template.match(/<option name="program" value="([^"]+)"/)?.[1] || template.match(/ path-to-js-file="([^"]+)"/)?.[1]

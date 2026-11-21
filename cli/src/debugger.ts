@@ -3,7 +3,7 @@ import path from "node:path"
 import { browsers } from "./discovery"
 import { native } from "./jetbrains"
 import { cfg, needFrontend } from "./config"
-import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, field, preview, selection, stamp, quote } from "./core"
+import { ides, root, object, command, attempt, sockets, owner, identity, probe, rpc, opened, record, content, rows, runs, field, preview, selection, stamp, quote } from "./core"
 import type { Endpoint, Json } from "./core"
 
 type Options = { chosen?: string; override?: string; session?: string; project?: string; configuration?: string }
@@ -176,7 +176,7 @@ export function debuggerClient(opts: Options) {
         }, timeout),
       )
       const all = rows(result, "sessions")
-      const live = opts.configuration ? all.filter((row) => row.runConfigurationName === opts.configuration && ["running", "paused"].includes(String(row.state))) : all
+      const live = opts.configuration ? all.filter((row) => runs(row, opts.configuration!) && ["running", "paused"].includes(String(row.state))) : all
       if (opts.configuration && !live.length) throw new Error(`No active ${opts.configuration} debug session; check debug jobs before starting another launch`)
       if (live.length > 1)
         throw new Error(
@@ -202,6 +202,24 @@ export function debuggerClient(opts: Options) {
       return content(await client.call("idectl_debug_filter", {
         configuration, projectPath: typeof target === "string" ? target : project || opened(ide),
       }, 5000))
+    } finally {
+      await client.close()
+    }
+  }
+
+  /** Points the IDE's Flutter device selector at one device; the device list loads asynchronously after the project opens. */
+  async function flutterDevice(ide: Endpoint, device: string) {
+    const client = await native(ide)
+    try {
+      const target = project || opened(ide)
+      const seen: { devices: unknown } = { devices: [] }
+      for (const delay of [0, 1000, 2000, 3000, 4000, 5000, 5000, 5000, 5000]) {
+        if (delay) await Bun.sleep(delay)
+        const result = content(await client.call("idectl_flutter_device", { device, projectPath: target }, 5000))
+        if (object(result) && result.selected === true) return result
+        if (object(result)) seen.devices = result.devices
+      }
+      throw new Error(`Flutter in ${ide.name} does not list device ${device}; connected: ${JSON.stringify(seen.devices)}`)
     } finally {
       await client.close()
     }
@@ -248,5 +266,5 @@ export function debuggerClient(opts: Options) {
   }
 
 
-  return { launchedBrowser, browserProcesses, endpoints, endpoint, tool, filter, configs, config, sessions, launch }
+  return { launchedBrowser, browserProcesses, endpoints, endpoint, tool, filter, flutterDevice, configs, config, sessions, launch }
 }

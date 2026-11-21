@@ -7,6 +7,7 @@
   <depends>com.intellij.modules.lang</depends>
   <depends>com.intellij.mcpServer</depends>
   <depends optional="true" config-file="rust.xml">com.jetbrains.rust</depends>
+  <depends optional="true" config-file="flutter.xml">io.flutter</depends>
   <extensions defaultExtensionNs="com.intellij">
     <mcpServer.mcpToolset implementation="com.idectl.ide.Lifecycle"/>
   </extensions>

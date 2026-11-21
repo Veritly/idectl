@@ -8,19 +8,32 @@ repositories {
   intellijPlatform { defaultRepositories() }
 }
 
+// -Prust=false builds for an IDE without the Rust plugin (the Cargo toolset is left out); -PmcpServerPath=DIR points at
+// the MCP Server plugin when the IDE installs it from the Marketplace instead of bundling it (Android Studio).
+val rust = providers.gradleProperty("rust").map { it.toBoolean() }.getOrElse(true)
+val mcpServerPath = providers.gradleProperty("mcpServerPath").orNull
+// -PflutterPath=DIR adds the Flutter toolset (device selection) when the IDE has the Flutter plugin installed.
+val flutterPath = providers.gradleProperty("flutterPath").orNull
+
 dependencies {
   intellijPlatform {
     local(providers.gradleProperty("idePath"))
-    bundledPlugin("com.intellij.mcpServer")
-    bundledPlugin("com.jetbrains.rust")
-    bundledPlugin("com.intellij.nativeDebug")
+    if (mcpServerPath != null) localPlugin(mcpServerPath) else bundledPlugin("com.intellij.mcpServer")
+    if (flutterPath != null) localPlugin(flutterPath)
+    if (rust) {
+      bundledPlugin("com.jetbrains.rust")
+      bundledPlugin("com.intellij.nativeDebug")
+    }
   }
 }
+
+if (!rust) sourceSets.main { kotlin.exclude("**/Cargo.kt") }
+if (flutterPath == null) sourceSets.main { kotlin.exclude("**/Flutter.kt") }
 
 kotlin { jvmToolchain(25) }
 
 val debugger by sourceSets.creating {
-  compileClasspath += sourceSets.main.get().compileClasspath + files(providers.gradleProperty("debuggerPath"))
+  compileClasspath += sourceSets.main.get().compileClasspath + files(providers.gradleProperty("debuggerPath").orElse(""))
 }
 
 tasks.register<Jar>("debuggerPatch") {
@@ -46,6 +59,6 @@ tasks.register<Jar>("debuggerPatch") {
 
 intellijPlatform {
   pluginConfiguration {
-    ideaVersion { sinceBuild = "263" }
+    ideaVersion { sinceBuild = providers.gradleProperty("sinceBuild").orElse("263") }
   }
 }

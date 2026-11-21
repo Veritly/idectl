@@ -17,3 +17,7 @@ JAVA_HOME=IDE_PATH/jbr ./gradlew buildPlugin -PidePath=IDE_PATH
 ```
 
 Install the ZIP under `build/distributions` in the IDE. The plugin requires a JetBrains IDE with its bundled MCP server enabled.
+
+In an IDE with the Flutter plugin, `idectl_flutter_devices` lists the devices Flutter can launch on and `idectl_flutter_device` selects one; a Flutter run configuration launches on the IDE's selected device.
+
+Build properties: `-Prust=false` leaves out the Cargo toolset for an IDE without the Rust plugin, `-PmcpServerPath=DIR` and `-PflutterPath=DIR` point at those plugins when they are installed rather than bundled, and `-PsinceBuild=N` sets the oldest supported platform build.
