@@ -2,7 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-import { cfg } from "./config"
+import { cfg, needFrontend } from "./config"
 
 export function scope(cwd: string, target: string, home = os.homedir()) {
   const root = fs.realpathSync(cwd)
@@ -41,7 +41,7 @@ function xml(value: string) {
 }
 
 function configured() {
-  return new Set([cfg.frontend.configuration, cfg.frontend.browser, ...Object.values(cfg.services).map((item) => item.configuration), ...Object.values(cfg.attach).map((item) => item.configuration)])
+  return new Set([...(cfg.frontend ? [cfg.frontend.configuration, cfg.frontend.browser] : []), ...Object.values(cfg.services).map((item) => item.configuration), ...Object.values(cfg.attach).map((item) => item.configuration)])
 }
 
 export function prepare(value: ReturnType<typeof scope>) {
@@ -128,12 +128,12 @@ export function browser(
   ]
   const dir = path.join(project, ".idea/runConfigurations")
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `${cfg.frontend.browser.replace(/[^A-Za-z0-9]+/g, "_")}.xml`)
+  const file = path.join(dir, `${needFrontend().browser.replace(/[^A-Za-z0-9]+/g, "_")}.xml`)
   const target = attach ? address(attach) : undefined
   const type = target
     ? `type="ChromiumRemoteDebugType" host="${xml(target.hostname.replace(/^\[|\]$/g, ""))}" port="${target.port}"`
     : `type="JavascriptDebugType" uri="${xml(page.href)}" useFirstLineBreakpoints="false" useTemporaryUserDataDir="true"`
-  const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="${xml(cfg.frontend.browser)}" ${type}>${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
+  const text = `<component name="ProjectRunConfigurationManager"><configuration default="false" name="${xml(needFrontend().browser)}" ${type}>${mappings.map(([url, file]) => `<mapping url="${xml(url)}" local-file="${xml(file)}"/>`).join("")}<method v="2"/></configuration></component>`
   return save(file, text)
 }
 

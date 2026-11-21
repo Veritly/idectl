@@ -5,7 +5,7 @@ import { root, object, attempt, rows, field, record } from "./core"
 import type { Endpoint } from "./core"
 import type { debuggerClient } from "./debugger"
 import { port } from "./service"
-import { cfg } from "./config"
+import { cfg, needFrontend } from "./config"
 
 export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project?: string; url?: string }) {
   const project = opts.project
@@ -23,11 +23,11 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
       const ide = (await endpoints("webstorm")).find((item) => item.id === "webstorm")
       if (!ide) return { ok: false, phase: "missing", service: "frontend", reason: "WebStorm is not running" }
       const data = await tool(ide, "list_debug_sessions")
-      const sessions = rows(data, "sessions").filter((item) => item.runConfigurationName === cfg.frontend.configuration && ["running", "paused"].includes(String(item.state)))
+      const sessions = rows(data, "sessions").filter((item) => item.runConfigurationName === needFrontend().configuration && ["running", "paused"].includes(String(item.state)))
       if (!sessions.length) return { ok: false, phase: "missing", service: "frontend", reason: "Start the frontend debug session first" }
       if (sessions.length > 1) return { ok: false, phase: "unknown", service: "frontend", reason: "Multiple frontend sessions are active" }
       if (sessions[0].state === "paused") return { ok: false, phase: "paused", service: "frontend", session: sessions[0] }
-      const url = `http://127.0.0.1:${port(cfg.frontend)}${cfg.frontend.health}`
+      const url = `http://127.0.0.1:${port(needFrontend())}${needFrontend().health}`
       const health = await fetch(url, { signal: AbortSignal.timeout(500) }).then((res) => ({ ok: res.ok, status: res.status }), () => ({ ok: false, status: 0 }))
       if (health.ok) return { ok: true, phase: "ready", service: "frontend", session: sessions[0], health: { ...health, url } }
       if (Date.now() >= until) return { ok: false, phase: "waiting", service: "frontend", session: sessions[0], health: { ...health, url } }
@@ -96,11 +96,11 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
         return { ok: res.ok, status: res.status }
       }),
     ])
-    const selected = runs?.ok ? rows(runs.value, "configurations").find((item) => item.name === cfg.frontend.browser) : undefined
+    const selected = runs?.ok ? rows(runs.value, "configurations").find((item) => item.name === needFrontend().browser) : undefined
     const saved = await attempt(async () => await Bun.file(record(picked.project)).json() as unknown)
     const matches = typeof selected?.description === "string" && selected.description.includes(new URL(url).href) ||
       selected?.typeId === "ChromiumRemoteDebugType" && saved.ok && object(saved.value) && saved.value.url === new URL(url).href && typeof saved.value.endpoint === "string"
-    const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === cfg.frontend.browser && ["running", "paused"].includes(String(item.state))) : undefined
+    const sessions = live?.ok ? rows(live.value, "sessions").filter((item) => item.runConfigurationName === needFrontend().browser && ["running", "paused"].includes(String(item.state))) : undefined
     const state = sessions?.length === 1 ? sessions[0].state : undefined
     const found = web?.ok ? await attempt(() => tab(web.value.endpoint, url)) : undefined
     const page = web?.ok && found?.ok && state !== "paused" ? await attempt(() => inspect(web.value.endpoint, url)) : undefined
@@ -137,7 +137,7 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
       attempt(() => configs(ide)),
       attempt(() => launchedBrowser(ide)),
     ])
-    const browser = runs.ok ? runs.value.find((item) => item.name === cfg.frontend.browser) : undefined
+    const browser = runs.ok ? runs.value.find((item) => item.name === needFrontend().browser) : undefined
     const match = typeof browser?.description === "string" ? browser.description.match(/uri: (\S+), engine:/) : undefined
     const address = url || match?.[1]
     const page = address && web.ok ? await attempt(() => inspect(web.value.endpoint, address)) : undefined
@@ -155,16 +155,16 @@ export function checks(debug: ReturnType<typeof debuggerClient>, opts: { project
     if (!url) throw new Error("test browser requires --url")
     if (!cfg.test?.browser) throw new Error("test browser requires test.browser in the project config")
     const test = cfg.test.browser
-    const web = scope(root, cfg.frontend.project)
+    const web = scope(root, needFrontend().project)
     if (!project || path.resolve(project) !== web.project) throw new Error(`test browser requires --project ${web.project}`)
     const ide = await endpoint()
     if (ide.id !== "webstorm") throw new Error("test browser requires WebStorm")
-    const ready = await readiness(cfg.frontend.project)
+    const ready = await readiness(needFrontend().project)
     if (!ready.browser || Object.entries(ready.stages).some(([key, value]) => key !== "app" && !value.ok))
       throw new Error(`Browser is not ready: ${JSON.stringify(ready.stages)}`)
     const browser = ready.browser
     const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
-      .filter((item) => item.runConfigurationName === cfg.frontend.browser && ["running", "paused"].includes(String(item.state)))
+      .filter((item) => item.runConfigurationName === needFrontend().browser && ["running", "paused"].includes(String(item.state)))
     if (sessions.length !== 1) throw new Error(`Expected one active browser debug session; found ${sessions.length}`)
     const session = field(sessions[0], ["id", "sessionId"])
     if (!session) throw new Error("Browser debug session has no ID")

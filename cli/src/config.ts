@@ -7,16 +7,19 @@ export type Target = {
   id: string
   project: string
   configuration: string
-  health: string
-  port: string
+  /** Health path and port variable: absent for a process that serves nothing, such as a Flutter app. */
+  health?: string
+  port?: string
+  /** Routing identity in the environment; the `none` adapter has none. */
   workload: string
   container?: string
   service?: string
   agent: Agent
   mode: Mode
 }
-export type Ide = "rustrover" | "webstorm"
-/** Rust services run a built binary in RustRover; Node and Bun services run a WebStorm configuration and have no binary. */
+export const ideIds = ["rustrover", "webstorm", "android-studio"] as const
+export type Ide = (typeof ideIds)[number]
+/** Rust services run a built binary in RustRover; Node and Bun services run a WebStorm configuration and Dart and Flutter services an Android Studio one, neither with a binary. */
 export type Service = Target & { ide: Ide; binary?: string; container: string }
 export type Frontend = Target & { browser: string; url: string; mounted: string }
 export type Kubernetes = { type: "kubernetes"; namespace: string; skip: string[]; manager?: { namespace: string; release: string } }
@@ -31,7 +34,8 @@ export type Config = {
   preflight?: string[]
   hooks: { runtime?: string[]; login?: string[] }
   adapter: Adapter
-  frontend: Frontend
+  /** A browser-hosted app to debug; omit it for projects without one (mobile, server-only). */
+  frontend?: Frontend
   services: Record<string, Service>
   attach: Record<string, Attach>
   test?: {
@@ -69,25 +73,30 @@ function record(value: unknown, key: string) {
   return value as Record<string, unknown>
 }
 
-function target(id: string, value: unknown, key: string): Target {
+function target(id: string, value: unknown, key: string, routed: boolean): Target {
   const item = record(value, key)
-  const agent = text(item.agent, `${key}.agent`)
-  const mode = text(item.mode, `${key}.mode`)
+  // Routing fields only mean something to an environment adapter; with `none` they default.
+  const agent = routed ? text(item.agent, `${key}.agent`) : String(item.agent ?? "node")
+  const mode = routed ? text(item.mode, `${key}.mode`) : String(item.mode ?? "intercept")
   if (agent !== "node" && agent !== "sidecar") throw new Error(`${file}: ${key}.agent must be node or sidecar`)
   if (mode !== "intercept" && mode !== "replace") throw new Error(`${file}: ${key}.mode must be intercept or replace`)
-  if (!text(item.health, `${key}.health`).startsWith("/")) throw new Error(`${file}: ${key}.health must be a path`)
+  if (item.health !== undefined && !text(item.health, `${key}.health`).startsWith("/")) throw new Error(`${file}: ${key}.health must be a path`)
   return {
     id,
     project: text(item.project, `${key}.project`),
     configuration: text(item.configuration, `${key}.configuration`),
-    health: text(item.health, `${key}.health`),
-    port: text(item.port, `${key}.port`),
-    workload: text(item.workload, `${key}.workload`),
+    health: item.health === undefined ? undefined : text(item.health, `${key}.health`),
+    port: item.port === undefined ? undefined : text(item.port, `${key}.port`),
+    workload: routed ? text(item.workload, `${key}.workload`) : String(item.workload ?? ""),
     container: item.container === undefined ? undefined : text(item.container, `${key}.container`),
     service: item.service === undefined ? undefined : text(item.service, `${key}.service`),
     agent,
     mode,
   }
+}
+
+function isIde(value: string): value is Ide {
+  return (ideIds as readonly string[]).includes(value)
 }
 
 function adapter(value: unknown): Adapter {
@@ -108,7 +117,9 @@ function adapter(value: unknown): Adapter {
 export function load(dir: string): Config {
   const data = record(JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")), file)
   const hooks = data.hooks === undefined ? {} : record(data.hooks, "hooks")
-  const front = record(data.frontend, "frontend")
+  const front = data.frontend === undefined ? undefined : record(data.frontend, "frontend")
+  const adapterValue = adapter(data.adapter)
+  const routed = adapterValue.type !== "none"
   const services = record(data.services, "services")
   const attach = data.attach === undefined ? {} : record(data.attach, "attach")
   const test = data.test === undefined ? undefined : record(data.test, "test")
@@ -121,23 +132,25 @@ export function load(dir: string): Config {
     state: path.join(dir, text(data.state, "state")),
     preflight: argv(data.preflight, "preflight"),
     hooks: { runtime: argv(hooks.runtime, "hooks.runtime"), login: argv(hooks.login, "hooks.login") },
-    adapter: adapter(data.adapter),
-    frontend: {
-      ...target("frontend", front, "frontend"),
-      browser: text(front.browser, "frontend.browser"),
-      url: text(front.url, "frontend.url"),
-      mounted: text(front.mounted, "frontend.mounted"),
-    },
+    adapter: adapterValue,
+    frontend: front
+      ? {
+          ...target("frontend", front, "frontend", routed),
+          browser: text(front.browser, "frontend.browser"),
+          url: text(front.url, "frontend.url"),
+          mounted: text(front.mounted, "frontend.mounted"),
+        }
+      : undefined,
     services: Object.fromEntries(Object.entries(services).map(([id, value]) => {
       const item = record(value, `services.${id}`)
       const ide = text(item.ide, `services.${id}.ide`)
-      if (ide !== "rustrover" && ide !== "webstorm") throw new Error(`${file}: services.${id}.ide must be rustrover or webstorm`)
-      if (ide === "webstorm" && item.binary !== undefined) throw new Error(`${file}: services.${id}.binary applies to rustrover services only`)
+      if (!isIde(ide)) throw new Error(`${file}: services.${id}.ide must be ${ideIds.join(", ")}`)
+      if (ide !== "rustrover" && item.binary !== undefined) throw new Error(`${file}: services.${id}.binary applies to rustrover services only`)
       return [id, {
-        ...target(id, item, `services.${id}`),
+        ...target(id, item, `services.${id}`, routed),
         ide,
         binary: ide === "rustrover" ? text(item.binary, `services.${id}.binary`) : undefined,
-        container: text(item.container, `services.${id}.container`),
+        container: routed ? text(item.container, `services.${id}.container`) : String(item.container ?? ""),
       }]
     })),
     attach: Object.fromEntries(Object.entries(attach).map(([id, value]) => {
@@ -169,6 +182,12 @@ export function load(dir: string): Config {
 }
 
 export const cfg = load(find(process.cwd()))
+
+/** The browser-hosted app; commands that need one fail here, with a message that names the missing configuration. */
+export function needFrontend(): Frontend {
+  if (!cfg.frontend) throw new Error(`This command needs a browser-hosted app: add "frontend" to ${file}`)
+  return cfg.frontend
+}
 
 export function service(id: string) {
   const found = cfg.services[id] || Object.values(cfg.services).find((item) => item.configuration === id)

@@ -15,7 +15,7 @@ export async function doctor(debug: ReturnType<typeof debuggerClient>, opts: { c
   const configs = debug.configs
   // A leftover port file makes every spawned process pause until a debugger connects.
   const attached = Object.entries(cfg.attach).filter(([, item]) => fs.existsSync(path.join(root, item.file))).map(([id, item]) => ({ id, port: item.port, hint: `${cfg.cli} debug detach ${id} when finished` }))
-  const targets = [cfg.frontend, ...Object.values(cfg.services)]
+  const targets = [...(cfg.frontend ? [cfg.frontend] : []), ...Object.values(cfg.services)]
   const [active, environment, guard] = await Promise.all([
     endpoints(),
     adapter.doctor(targets),

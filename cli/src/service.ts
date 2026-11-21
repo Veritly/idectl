@@ -22,6 +22,7 @@ export function vars() {
 }
 
 export function port(item: Target) {
+  if (!item.port) throw new Error(`${item.id} has no "port" in idectl.json`)
   const value = Number(vars()[item.port])
   if (!Number.isInteger(value) || value < 1 || value > 65_535) throw new Error(`${item.port} in ${cfg.env} must be 1..65535`)
   return value
@@ -32,6 +33,7 @@ export async function preflight() {
 }
 
 export async function health(item: Target) {
+  if (!item.health) throw new Error(`${item.id} has no "health" path in idectl.json`)
   const url = `http://127.0.0.1:${port(item)}${item.health}`
   const hit = await fetch(url, { signal: AbortSignal.timeout(500) }).then(
     (res) => ({ ok: res.ok, status: res.status }),

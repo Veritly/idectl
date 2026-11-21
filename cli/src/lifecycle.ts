@@ -7,7 +7,7 @@ import { jetbrains } from "./jetbrains"
 import type { Json, Endpoint } from "./core"
 import { settings } from "./setup"
 import { ensure } from "./plugin"
-import { cfg as config } from "./config"
+import { cfg as config, needFrontend } from "./config"
 
 type Context = {
   project?: string
@@ -183,13 +183,13 @@ export function lifecycle(ctx: Context) {
           url &&
           !runs.some(
             (item) =>
-              item.name === config.frontend.browser &&
+              item.name === needFrontend().browser &&
               (attach
                 ? item.typeId === "ChromiumRemoteDebugType"
                 : String(item.description).includes(new URL(url).href)),
           )
         )
-          throw new Error(`Waiting for WebStorm to load ${config.frontend.browser}; reopen this project if its configuration is stale`)
+          throw new Error(`Waiting for WebStorm to load ${needFrontend().browser}; reopen this project if its configuration is stale`)
         return live
       })
       if (ready.ok) {
@@ -219,7 +219,7 @@ export function lifecycle(ctx: Context) {
           port: ide.port,
           log,
           context: ["--ide", ide.id, "--project", cfg.project],
-          configuration: url ? config.frontend.browser : undefined,
+          configuration: url ? needFrontend().browser : undefined,
           url: url ? new URL(url).href : undefined,
           endpoint: attach ? address(attach).origin : undefined,
         }

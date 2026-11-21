@@ -4,7 +4,7 @@ import { unbound } from "./lines"
 import { observe, step } from "./stepping"
 import { dispatch } from "./jetbrains"
 import { root, ides, object, print, attempt, launcher, input, opened, rows, field } from "./core"
-import { cfg, known, service as find } from "./config"
+import { cfg, needFrontend, known, service as find } from "./config"
 
 const bin = cfg.cli
 import { adapter } from "./adapter"
@@ -244,7 +244,7 @@ export async function main() {
   if (group === "route" || group === "unroute") {
     const name = args.shift()
     if (!name || args.length) throw new Error(`${group} expects frontend|${names}`)
-    const item = name === "frontend" ? cfg.frontend : find(name)
+    const item = name === "frontend" ? needFrontend() : find(name)
     if (group === "route" && item.mode === "replace") launchable(name, false)
     print(group === "route" ? await attach(item) : await detach(item))
     return 0
@@ -360,7 +360,7 @@ export async function main() {
     }
     if (action === "cancel") {
       const name = args.join(" ").trim()
-      const target = name === "frontend" ? cfg.frontend.configuration : name === "browser" ? cfg.frontend.browser : name
+      const target = name === "frontend" ? needFrontend().configuration : name === "browser" ? needFrontend().browser : name
       if (!target) throw new Error("debug cancel requires a configuration name")
       const sessions = rows(await tool(ide, "list_debug_sessions"), "sessions")
         .filter((item) => item.runConfigurationName === target && ["running", "paused"].includes(String(item.state)))
@@ -553,7 +553,7 @@ export async function main() {
       print(await tool(ide, "evaluate_expression", { expression: `${target} = (${value})`, frame_index: index() }))
     } else if (action === "start") {
       const value = args.join(" ").trim()
-      const name = value === "frontend" ? cfg.frontend.configuration : value === "browser" ? cfg.frontend.browser : value
+      const name = value === "frontend" ? needFrontend().configuration : value === "browser" ? needFrontend().browser : value
       if (!name) throw new Error("debug start requires a configuration name")
       const run = await config(ide, name)
       const prior = ide.id === "webstorm" && run.typeId === "JavascriptDebugType" ? (await debug.browserProcesses(ide)).map((row) => row.pid) : undefined

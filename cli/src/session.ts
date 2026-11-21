@@ -7,14 +7,16 @@ import { debuggerClient } from "./debugger"
 import { jobs, enqueue, cancel, service, launchable, wait as waitJob } from "./job"
 import { vars, preflight, local, attach as link, detach as unlink } from "./service"
 import { adapter } from "./adapter"
-import { cfg, known, service as find, shm } from "./config"
+import { cfg, needFrontend, known, service as find, shm } from "./config"
+import type { Frontend } from "./config"
 import { login } from "./auth"
 import { close as closeBrowser } from "./browser"
 
 const components = Object.fromEntries(Object.values(cfg.services).map((item) => [item.id, item.project]))
 const base = shm("sessions")
 const cli = [process.execPath, path.join(import.meta.dir, "cli.ts")]
-const front = cfg.frontend
+// Managed sessions pair a browser frontend with the services behind it; every entry point below checks one is configured.
+const front = cfg.frontend as Frontend
 
 function dir(name: string) {
   if (!components[name]) throw new Error(`Unknown service ${name}; expected ${Object.keys(components).join("|")}`)
@@ -29,6 +31,7 @@ function read(folder: string) {
 }
 
 export function context(name: string) {
+  needFrontend()
   if (name === "frontend") {
     const active = owner()
     throw new Error(`--service selects a backend service; use ${active ? active.context.join(" ") : `--ide webstorm --project ${front.project} --session ID`} for frontend debugger commands. The managed session's ready result includes browser.context with the exact selection.`)
@@ -41,6 +44,7 @@ export function context(name: string) {
 }
 
 export async function browser(name: string) {
+  needFrontend()
   const state = context(name).state
   if (!state || state.phase !== "ready" || !object(state.browser) || typeof state.browser.endpoint !== "string")
     throw new Error(`Managed browser is not ready; use wait session ${name} --json, or debug up ${name} if no session is active`)
@@ -130,6 +134,7 @@ function save(folder: string, state: Record<string, unknown>) {
 }
 
 export function up(name: string) {
+  needFrontend()
   launchable(name, true)
   const folder = dir(name)
   fs.mkdirSync(base, { recursive: true, mode: 0o700 })
@@ -161,6 +166,7 @@ export function up(name: string) {
 }
 
 export function down(name: string) {
+  needFrontend()
   const folder = dir(name)
   if (!fs.existsSync(folder)) return { ok: true, service: name, phase: "stopped" }
   const state = read(folder)
@@ -178,6 +184,7 @@ export function down(name: string) {
 }
 
 export async function wait(name: string, seconds: number, goal = "ready") {
+  needFrontend()
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 60) throw new Error("--timeout must be between 0 and 60 seconds")
   if (!["ready", "stopped"].includes(goal)) throw new Error("--until must be ready or stopped")
   const folder = dir(name)

@@ -1,5 +1,5 @@
 import { sockets, stamp } from "./core"
-import { cfg } from "./config"
+import { cfg, needFrontend } from "./config"
 
 type Json = Record<string, unknown>
 
@@ -100,7 +100,7 @@ export async function inspect(endpoint: string, url: string) {
     await opened
     await send(1, "Log.enable")
     const value = await send(2, "Runtime.evaluate", {
-      expression: `({document:document.readyState,mounted:Boolean(${cfg.frontend.mounted}),elements:document.body?.querySelectorAll("*").length || 0})`,
+      expression: `({document:document.readyState,mounted:Boolean(${needFrontend().mounted}),elements:document.body?.querySelectorAll("*").length || 0})`,
       returnByValue: true,
     })
     if (!object(value) || !object(value.result) || !object(value.result.value)) throw new Error("Browser page state is unavailable")

@@ -18,7 +18,7 @@ function find(id: string) {
 
 /** The project the IDE starts on: later projects are opened into the running IDE. */
 function start(id: string) {
-  const item = id === "webstorm" ? cfg.frontend.project : Object.values(cfg.services).find((row) => row.ide === id)?.project
+  const item = (id === "webstorm" ? cfg.frontend?.project : undefined) ?? Object.values(cfg.services).find((row) => row.ide === id)?.project
   if (!item) throw new Error(`No ${id} project is configured in idectl.json`)
   return item
 }
